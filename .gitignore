@@ -1,0 +1,17 @@
+# Runtime artifacts
+logs/
+state/journal.json
+KILL_SWITCH
+
+# Backtest artifacts (data is large; results are local)
+backtest/data/
+backtest/results/
+
+# Secrets — never commit keys
+.env
+*.key
+
+# Python
+__pycache__/
+*.pyc
+.venv/

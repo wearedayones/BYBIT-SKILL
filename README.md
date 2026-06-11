@@ -1,0 +1,84 @@
+# Multi-Agent Liquidity Sweep & Event-Driven Bracket Strategy
+
+Claude Code multi-agent trading system for Bybit (15m timeframe).
+
+## How it works
+
+```
+Bybit WebSocket (kline.15, confirm=true)
+        │  every candle close
+        ▼
+candle_watcher.py  ──  deterministic sweep pre-filter (pure Python)
+        │  only if a candidate exists (~5-10×/day instead of 96×)
+        ▼
+claude -p (headless)  ──  reads CLAUDE.md, runs subagents SERIALLY:
+        1. sweep-analyst   → APPROVE/REJECT + entry/stop/target
+        2. event-guard     → CLEAR/BLACKOUT (FOMC, CPI, NFP, news)
+        3. risk-manager    → exact qty or VETO (live equity via Bybit MCP)
+        4. executor        → ONE atomic bracket order (entry+TP+SL), verified
+        ▼
+state/journal.json  ──  the system's memory between runs
+```
+
+## Setup
+
+1. **Install deps**
+   ```bash
+   pip install pybit pyyaml
+   npm install -g @anthropic-ai/claude-code
+   ```
+2. **Add your Bybit MCP server** to the project (`.mcp.json` in project root),
+   e.g. whichever Bybit MCP you use. Run `claude mcp list` to confirm, then
+   check the exact tool names — if they're not exposed as `mcp__bybit__*`,
+   update the `--allowedTools` list in `daemon/candle_watcher.py` and the
+   `tools:` lines in `.claude/agents/*.md`.
+3. **API key**: create a Bybit key with trade permission ONLY — no withdrawal,
+   no transfer. Start on **testnet** (`testnet: true` in `config.yaml`).
+4. **Run the watcher**
+   ```bash
+   python daemon/candle_watcher.py
+   ```
+   For 24/7: run under systemd or `tmux`/`supervisord` on a VPS so it survives
+   disconnects. Example systemd unit:
+   ```ini
+   [Service]
+   WorkingDirectory=/opt/liquidity-sweep-bot
+   ExecStart=/usr/bin/python3 daemon/candle_watcher.py
+   Restart=always
+   ```
+
+## Validate BEFORE running live (do this first)
+
+```bash
+python backtest/fetch_data.py --symbol BTCUSDT --days 365
+python backtest/backtest.py --csv backtest/data/BTCUSDT_15m.csv
+```
+Then follow `backtest/BACKTEST.md` — a strict walk-forward protocol (train/test
+split, max 3 tunable knobs, hard acceptance bar) designed so Claude Code can
+adjust parameters WITHOUT curve-fitting. If the raw filter shows no edge there,
+do not proceed to live trading.
+
+## Controls
+
+- **Kill switch**: `touch KILL_SWITCH` in project root → no new analysis or
+  trades (does NOT close open positions — do that manually).
+- **Logs**: `logs/watcher.log` (daemon) and `logs/run_*.json` (every Claude run).
+- **Journal**: `state/journal.json` — decisions, orders, daily P&L, swept levels.
+
+## Hard risk limits (config.yaml)
+
+1% risk per trade, max 1 open position, 3% daily loss stop, min 2R, max 3x
+leverage. The risk-manager agent treats these as ceilings and holds veto power.
+
+## Before going live — non-negotiable
+
+1. Weeks on testnet, reviewing every `logs/run_*.json` for agent reasoning quality.
+2. Verify the executor's TP/SL verification path by deliberately breaking it once.
+3. Start live with the minimum order size regardless of the sizing formula.
+4. Understand: LLM judgment cannot be backtested deterministically. Collect a
+   forward-test sample (50+ signals) before trusting any sizing above minimum.
+
+This is experimental software, not financial advice. Liquidity-sweep strategies
+lose money in strong trends; automated systems fail in ways manual trading
+doesn't (stuck orders, missed fills, API outages). Never run capital you can't
+afford to lose.
