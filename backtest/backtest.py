@@ -26,7 +26,8 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "daemon"))
-from sweep_filter import Candle, detect_sweep  # noqa: E402
+from sweep_filter import Candle  # noqa: E402
+from strategies import REGISTRY  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent
 
@@ -44,7 +45,7 @@ def ts_of(date_str: str) -> int:
     return int(datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000)
 
 
-def run(candles, fcfg, bcfg, fees_bps=5.5, slip_bps=2.0, max_hold=96, warmup=200):
+def run(candles, strategy, fcfg, bcfg, fees_bps=5.5, slip_bps=2.0, max_hold=96, warmup=200):
     trades = []
     open_trade = None
     recent_levels = []  # (price, ts) of levels already traded, 1-day dedupe
@@ -74,32 +75,33 @@ def run(candles, fcfg, bcfg, fees_bps=5.5, slip_bps=2.0, max_hold=96, warmup=200
             continue  # one position at a time, no same-candle re-entry
 
         # --- look for a new signal ---
-        cand = detect_sweep(candles[: i + 1], fcfg)
+        cand = strategy.detect(candles[: i + 1], fcfg)
         if not cand:
             continue
-        lp = cand.level["price"]
+        lp = cand.key_price
         if any(abs(lp - p) / p < 0.001 and c.ts - ts0 < 86_400_000 for p, ts0 in recent_levels):
             continue  # same level already traded today
         recent_levels.append((lp, c.ts))
         recent_levels[:] = [(p, t0) for p, t0 in recent_levels if c.ts - t0 < 86_400_000]
 
         slip = slip_bps / 10_000
-        beyond = bcfg.get("stop_beyond_wick_pct", 0.1) / 100
+        beyond = bcfg.get("stop_beyond_pct", bcfg.get("stop_beyond_wick_pct", 0.1)) / 100
         rr = bcfg.get("fixed_rr", 2.5)
         if cand.direction == "short":
             entry = c.close * (1 - slip)
-            sl = cand.candle["high"] * (1 + beyond)
+            sl = cand.stop_hint * (1 + beyond)
             risk = sl - entry
             tp = entry - rr * risk
         else:
             entry = c.close * (1 + slip)
-            sl = cand.candle["low"] * (1 - beyond)
+            sl = cand.stop_hint * (1 - beyond)
             risk = entry - sl
             tp = entry + rr * risk
         if risk <= 0 or tp <= 0:
             continue
         fee_r = (2 * fees_bps / 10_000) * entry / risk
-        open_trade = {"ts": c.ts, "dir": cand.direction, "kind": cand.level["kind"],
+        kind = cand.context.get("level", {}).get("kind", cand.strategy)
+        open_trade = {"ts": c.ts, "dir": cand.direction, "kind": kind,
                       "entry": entry, "sl": sl, "tp": tp, "risk": risk, "rr": rr,
                       "fee_r": fee_r, "bars": 0}
     return trades
@@ -142,29 +144,38 @@ def report(trades, label=""):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", required=True)
+    ap.add_argument("--strategy", default="sweep", choices=list(REGISTRY))
     ap.add_argument("--start"); ap.add_argument("--end")
     ap.add_argument("--min-wick", type=float); ap.add_argument("--swing", type=int)
     ap.add_argument("--rr", type=float)
+    ap.add_argument("--param", action="append",
+                    help="generic strategy param override, e.g. --param range_lookback=64")
     ap.add_argument("--fees-bps", type=float, default=5.5)
     ap.add_argument("--slip-bps", type=float, default=2.0)
     ap.add_argument("--out", default=None, help="write trades csv + stats json here")
     args = ap.parse_args()
 
     cfg = yaml.safe_load((ROOT.parent / "config.yaml").read_text())
-    fcfg, bcfg = dict(cfg["filter"]), dict(cfg["bracket"])
+    scfg = cfg["strategies"][args.strategy]
+    fcfg, bcfg = dict(scfg.get("params", {})), dict(scfg.get("bracket", {}))
+    strategy = REGISTRY[args.strategy]
     if args.min_wick: fcfg["min_wick_pct"] = args.min_wick
     if args.swing: fcfg["swing_strength"] = args.swing
     if args.rr: bcfg["fixed_rr"] = args.rr
+    if args.param:
+        for kv in args.param:
+            k, v = kv.split("=", 1)
+            fcfg[k] = float(v) if "." in v else int(v)
 
     candles = load_csv(args.csv)
     if args.start: candles = [c for c in candles if c.ts >= ts_of(args.start)]
     if args.end: candles = [c for c in candles if c.ts < ts_of(args.end)]
     span = (f"{datetime.fromtimestamp(candles[0].ts/1000, timezone.utc):%Y-%m-%d} -> "
             f"{datetime.fromtimestamp(candles[-1].ts/1000, timezone.utc):%Y-%m-%d}")
-    print(f"{len(candles)} candles | {span} | params: wick>={fcfg['min_wick_pct']} "
-          f"swing={fcfg['swing_strength']} rr={bcfg['fixed_rr']} fees={args.fees_bps}bps")
+    print(f"{len(candles)} candles | {span} | strategy={args.strategy} | params={fcfg} "
+          f"| rr={bcfg.get('fixed_rr')} fees={args.fees_bps}bps")
 
-    trades = run(candles, fcfg, bcfg, args.fees_bps, args.slip_bps)
+    trades = run(candles, strategy, fcfg, bcfg, args.fees_bps, args.slip_bps)
     stats = report(trades, span)
 
     if args.out:
