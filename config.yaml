@@ -1,0 +1,36 @@
+# ===== Liquidity Sweep Bot configuration =====
+
+symbol: BTCUSDT
+testnet: true            # KEEP true until the system has run clean for weeks
+
+# Pre-filter (deterministic, runs in Python before Claude is ever invoked)
+filter:
+  lookback_candles: 192        # ~2 days of 15m
+  swing_strength: 2            # fractal width
+  equal_level_tolerance_pct: 0.05
+  min_wick_pct: 25             # wick must be >=25% of candle range
+
+# Claude invocation
+max_turns: 30
+invoke_timeout_sec: 600
+invoke_cooldown_sec: 900       # never invoke more than once per candle
+
+# Risk rules (enforced by risk-manager agent — these are HARD limits)
+risk:
+  risk_per_trade_pct: 1.0      # % of equity risked per trade
+  max_open_positions: 1
+  max_daily_loss_pct: 3.0      # stop trading for the day past this
+  min_rr: 2.0                  # reject setups under 2R
+  max_leverage: 3
+
+# Bracket construction
+bracket:
+  stop_beyond_wick_pct: 0.1    # SL placed 0.1% beyond the sweep wick
+  tp_target: opposite_liquidity  # or "fixed_rr"
+  fixed_rr: 2.5
+
+# Event guard
+events:
+  blackout_minutes_before: 30
+  blackout_minutes_after: 30
+  watch: [FOMC, CPI, NFP, PPI, FED_SPEECH]

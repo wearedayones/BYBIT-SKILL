@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "bybit": {
+      "command": "npx",
+      "args": ["-y", "<your-bybit-mcp-package>"],
+      "env": {
+        "BYBIT_API_KEY": "${BYBIT_API_KEY}",
+        "BYBIT_API_SECRET": "${BYBIT_API_SECRET}",
+        "BYBIT_TESTNET": "${BYBIT_TESTNET}"
+      }
+    }
+  }
+}
