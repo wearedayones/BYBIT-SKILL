@@ -22,11 +22,15 @@ which produces beautiful backtests and dead accounts.
    - TRAIN: first ~9 months
    - TEST:  last ~3 months (untouched until step 5)
 
-3. **Baseline on TRAIN** with config defaults:
+3. **Baseline on TRAIN** with config defaults — run PER STRATEGY:
    ```bash
    python backtest/backtest.py --csv backtest/data/BTCUSDT_15m.csv \
-       --start <t0> --end <train_end> --out backtest/results/baseline
+       --strategy sweep --start <t0> --end <train_end> --out backtest/results/sweep_baseline
+   python backtest/backtest.py --csv backtest/data/BTCUSDT_15m.csv \
+       --strategy breakout --start <t0> --end <train_end> --out backtest/results/breakout_baseline
    ```
+   Generic strategy params can be tuned with `--param k=v`
+   (e.g. `--param range_lookback=64 --param min_body_atr=1.5` for breakout).
 
 4. **Tune on TRAIN only.** Grid over AT MOST these three knobs, coarse steps:
    - `--min-wick` ∈ {25, 35, 45}
@@ -56,3 +60,11 @@ which produces beautiful backtests and dead accounts.
 For every run: date range, params, trades, win rate, expectancy_R, profit
 factor, max DD, and a one-paragraph honest verdict. Include losing runs.
 The journal of failed configs is as valuable as the winner.
+
+## Multi-strategy rules
+
+- Each strategy passes or fails INDEPENDENTLY against the same bar. Never
+  enable a failed strategy because "the portfolio looks better with it".
+- Only after each passes alone, run both on TEST and check the combined
+  equity curve isn't dominated by overlapping losers in the same weeks.
+- Set `enabled: true` in config.yaml only for strategies that passed.

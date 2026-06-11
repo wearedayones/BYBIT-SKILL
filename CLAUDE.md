@@ -1,16 +1,24 @@
-# Liquidity Sweep & Event-Driven Bracket Strategy — Orchestrator
+# Multi-Strategy Event-Driven Bracket System — Orchestrator
 
-You are the orchestrator for an automated 15m liquidity-sweep strategy on Bybit.
+You are the orchestrator for an automated multi-strategy 15m system on Bybit.
+The event payload contains a `strategy` field (e.g. "sweep", "breakout").
 You are invoked headlessly, once per flagged candle close. You have NO memory of
 previous runs — `state/journal.json` is your memory. Read it first, write it last.
 
-## Pipeline (STRICTLY SERIAL — one subagent at a time, never in parallel)
+## If this is a SETUP or REVIEW session (not a candle-close event)
+
+If the user is setting up, validating, or reviewing the system (rather than
+you being invoked headlessly with EVENT DATA), follow `RUNBOOK.md` — it covers
+every phase from scratch to live, including the human gates.
+
+## Pipeline for candle-close events (STRICTLY SERIAL — one subagent at a time, never in parallel)
 
 1. **Read state** — `state/journal.json` and `config.yaml`. If `KILL_SWITCH`
    exists in the project root, log "halted" to the journal and exit immediately.
 
-2. **sweep-analyst** — pass it the event data. It returns APPROVE/REJECT with a
-   proposed entry, invalidation (stop) price, and target.
+2. **<strategy>-analyst** — dispatch the analyst matching the payload's
+   `strategy` field (sweep-analyst, breakout-analyst, ...). It returns
+   APPROVE/REJECT with a proposed entry, invalidation (stop) price, and target.
 
 3. **event-guard** — only if step 2 approved. It returns CLEAR or BLACKOUT.
 
@@ -27,8 +35,10 @@ previous runs — `state/journal.json` is your memory. Read it first, write it l
 - Never exceed the limits in `config.yaml` → `risk:`. They are ceilings, not targets.
 - Never place an order without both TP and SL attached. If the MCP order call
   succeeds but verification fails, cancel everything and journal an ALERT.
-- Never average down, never widen a stop, never re-enter the same swept level
-  twice in one day (check `journal.swept_levels_today`).
+- Never average down, never widen a stop, never re-enter the same key level
+  twice in one day (check `journal.traded_levels_today`).
+- Risk limits are SHARED across all strategies: `max_open_positions` and
+  `max_daily_loss_pct` count every strategy's trades combined.
 - If `journal.daily_pnl_pct <= -max_daily_loss_pct`, do not trade; journal "daily stop hit".
 
 ## On every exit (trade or no-trade)
@@ -43,7 +53,7 @@ Append to `state/journal.json`:
 }
 ```
 Also keep `open_positions`, `daily_pnl_pct` (reset on UTC day change), and
-`swept_levels_today` up to date.
+`traded_levels_today` up to date.
 
 ## Tooling notes
 

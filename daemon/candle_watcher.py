@@ -20,7 +20,9 @@ from pathlib import Path
 import yaml
 from pybit.unified_trading import HTTP, WebSocket
 
-from sweep_filter import Candle, detect_sweep, asdict
+from dataclasses import asdict
+from sweep_filter import Candle
+from strategies import enabled_strategies
 
 ROOT = Path(__file__).resolve().parent.parent
 CFG = yaml.safe_load((ROOT / "config.yaml").read_text())
@@ -52,34 +54,36 @@ def bootstrap_history():
     log(f"Bootstrapped {len(candles)} candles for {SYMBOL}")
 
 
-def invoke_claude(candidate):
+def invoke_claude(signal, bracket_cfg):
     global last_invoke_ts
     cooldown = CFG.get("invoke_cooldown_sec", 900)
     if time.time() - last_invoke_ts < cooldown:
-        log("Candidate found but inside cooldown — skipped.")
+        log("Signal found but inside cooldown — skipped.")
         return
     last_invoke_ts = time.time()
 
     payload = {
-        "event": "sweep_candidate",
+        "event": f"{signal.strategy}_signal",
+        "strategy": signal.strategy,
         "symbol": SYMBOL,
         "timeframe": "15m",
         "utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "candidate": {
-            "direction": candidate.direction,
-            "level": candidate.level,
-            "candle": candidate.candle,
-            "wick_pct": candidate.wick_pct,
-            "extras": candidate.extras,
+        "signal": {
+            "direction": signal.direction,
+            "candle": signal.candle,
+            "context": signal.context,
+            "stop_hint": signal.stop_hint,
+            "key_price": signal.key_price,
         },
+        "bracket_rules": bracket_cfg,
         "recent_candles": [asdict(c) for c in candles[-40:]],
     }
 
     prompt = (
-        "A 15m candle just closed and the pre-filter flagged a liquidity-sweep candidate. "
-        "Follow the pipeline in CLAUDE.md exactly: dispatch sweep-analyst, then event-guard, "
-        "then risk-manager, then (only if all approve) executor — SERIALLY, one at a time. "
-        "Update state/journal.json before exiting, whatever the outcome.\n\n"
+        f"A 15m candle just closed and the '{signal.strategy}' pre-filter flagged a signal. "
+        f"Follow the pipeline in CLAUDE.md exactly: dispatch {signal.strategy}-analyst, then "
+        "event-guard, then risk-manager, then (only if all approve) executor — SERIALLY, one "
+        "at a time. Update state/journal.json before exiting, whatever the outcome.\n\n"
         f"EVENT DATA:\n{json.dumps(payload, indent=2)}"
     )
 
@@ -89,8 +93,7 @@ def invoke_claude(candidate):
         "--max-turns", str(CFG.get("max_turns", 30)),
         "--output-format", "json",
     ]
-    log(f"Invoking Claude Code: {candidate.direction} candidate at {candidate.level['kind']} "
-        f"{candidate.level['price']}")
+    log(f"Invoking Claude Code: [{signal.strategy}] {signal.direction} @ key {signal.key_price}")
     try:
         result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
                                 timeout=CFG.get("invoke_timeout_sec", 600))
@@ -117,11 +120,13 @@ def on_kline(msg):
         if KILL.exists():
             log("KILL_SWITCH present — analysis suppressed.")
             return
-        candidate = detect_sweep(candles, CFG["filter"])
-        if candidate:
-            invoke_claude(candidate)
+        for module, params, bracket in enabled_strategies(CFG):
+            signal = module.detect(candles, params)
+            if signal:
+                invoke_claude(signal, bracket)
+                break  # highest-priority signal wins; one invocation per candle
         else:
-            log("No sweep candidate.")
+            log("No signal.")
     except Exception as e:
         log(f"on_kline error: {e}")
 
