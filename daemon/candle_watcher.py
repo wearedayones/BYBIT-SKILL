@@ -25,6 +25,7 @@ from dataclasses import asdict
 from sweep_filter import Candle
 from strategies import enabled_strategies
 from strategies.regime import detect_regime, vol_regime
+from notifier import alert
 
 ROOT = Path(__file__).resolve().parent.parent
 CFG = yaml.safe_load((ROOT / "config.yaml").read_text())
@@ -122,6 +123,9 @@ def reconcile_positions():
 
     if keyset(live) != keyset(recorded):
         log(f"reconcile MISMATCH: exchange={live} journal={recorded} — adopting exchange truth.")
+        alert(f"Position reconcile MISMATCH on {SYMBOL}: exchange shows "
+              f"{len(live)} position(s), journal had {len(recorded)}. "
+              f"Journal updated to exchange truth — review logs/watcher.log.")
         journal["open_positions"] = live
         journal.setdefault("runs", []).append({
             "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -187,6 +191,8 @@ def invoke_claude(signal, bracket_cfg):
                                     timeout=CFG.get("invoke_timeout_sec", 600))
         except subprocess.TimeoutExpired:
             log("ERROR: Claude run timed out — check for stuck orders manually! (no retry)")
+            alert(f"Claude pipeline TIMED OUT on {SYMBOL} {signal.strategy} signal — "
+                  "an order may be partially placed. Check the exchange.")
             return
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         (LOGS / f"run_{stamp}.json").write_text(result.stdout or result.stderr)
@@ -269,13 +275,29 @@ def main():
     reconcile_positions()  # crash recovery: exchange truth wins on restart
     ws = start_ws()
     last_kline_ts = time.time()
+    alert(f"Daemon started: {SYMBOL} {INTERVAL}m testnet={TESTNET}")
     log(f"Watching kline.{INTERVAL} stream… (touch KILL_SWITCH to halt trading)")
 
     # Watchdog: a WebSocket can die silently. If no confirmed kline arrives
     # within 2.5x the interval, tear down and reconnect.
     stale_after = 2.5 * INTERVAL_MS / 1000
+    reconnects = 0
+    last_report_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     while True:
         time.sleep(60)
+
+        # Daily report at UTC midnight
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if today != last_report_date:
+            try:
+                subprocess.run([sys.executable, str(ROOT / "scripts" / "daily_report.py"),
+                                "--date", last_report_date],
+                               cwd=ROOT, capture_output=True, timeout=120)
+                log(f"Daily report generated for {last_report_date}.")
+            except Exception as e:
+                log(f"Daily report failed: {e}")
+            last_report_date = today
+
         if time.time() - last_kline_ts > stale_after:
             log(f"WATCHDOG: no kline for > {stale_after:.0f}s — reconnecting WebSocket.")
             try:
@@ -285,7 +307,10 @@ def main():
             try:
                 ws = start_ws()
                 last_kline_ts = time.time()
+                reconnects += 1
                 log("WATCHDOG: WebSocket reconnected.")
+                if reconnects in (1, 5, 20):  # escalating, not spamming
+                    alert(f"Daemon WebSocket reconnected (count={reconnects}) on {SYMBOL}.")
             except Exception as e:
                 log(f"WATCHDOG: reconnect failed ({e}) — retrying in 60s.")
 

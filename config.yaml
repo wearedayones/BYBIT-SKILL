@@ -125,6 +125,13 @@ risk:
   min_rr: 2.0
   max_leverage: 3
 
+# ---- Alerts (critical events only — alert fatigue is a failure mode) ----
+# Requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables.
+# System runs fine with enabled: false; would-be alerts land in logs/alerts.log.
+alerts:
+  enabled: false
+  channel: telegram
+
 # ---- Event guard ----
 events:
   blackout_minutes_before: 30
