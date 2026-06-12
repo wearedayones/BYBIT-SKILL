@@ -51,9 +51,41 @@ which produces beautiful backtests and dead accounts.
 
 6. **Robustness spot-checks** (report, don't tune on them):
    - Re-run TEST with `--fees-bps 8 --slip-bps 4` (bad execution scenario).
-   - Run a second symbol (e.g. ETHUSDT) with the same params.
    - Note the per-level-kind breakdown: if all profit comes from one level
      kind, say so explicitly.
+
+## Institutional validation (required before enabling at scale)
+
+7. **Walk-forward validation** — proves the edge persists across time, not
+   just one lucky train/test cut:
+   ```bash
+   python backtest/walk_forward.py --csv backtest/data/BTCUSDT_15m.csv \
+       --strategy <name> --train-months 9 --test-months 3 --step-months 1 \
+       [same params chosen in step 4]
+   ```
+   Pass bar: >= 60% of out-of-sample folds positive, combined expectancy > 0,
+   combined max drawdown < 20R. FAIL = do not enable, regardless of single-window results.
+
+8. **Parameter sensitivity** — confirms chosen params are on a flat plateau,
+   not a fragile local maximum:
+   ```bash
+   python backtest/sensitivity.py --csv backtest/data/BTCUSDT_15m.csv \
+       --strategy <name> --start <TRAIN_START> --end <TRAIN_END> \
+       --params <param1>=<val>,<param2>=<val> --bracket fixed_rr=<val>
+   ```
+   Any FRAGILE flag = reconsider the param combination before proceeding.
+
+9. **Multi-symbol required** (not optional at institutional level):
+   Repeat steps 3–8 for ETHUSDT with the SAME params, no re-tuning.
+   A strategy with an edge only on BTCUSDT is likely fitted to BTCUSDT noise.
+   Pass bar: expectancy_R > 0 on both BTCUSDT and ETHUSDT.
+
+10. **Monte Carlo stress test** on the final test window:
+    ```bash
+    python backtest/backtest.py --csv backtest/data/BTCUSDT_15m.csv \
+        --strategy <name> --start <TEST_START> --end <TEST_END> --monte-carlo 2000
+    ```
+    Pass bar: `ruin_pct < 5%` (probability of cumulative R ever reaching -20R).
 
 ## Reporting format (backtest/results/RESULTS.md)
 

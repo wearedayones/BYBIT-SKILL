@@ -11,6 +11,20 @@ If the user is setting up, validating, or reviewing the system (rather than
 you being invoked headlessly with EVENT DATA), follow `RUNBOOK.md` — it covers
 every phase from scratch to live, including the human gates.
 
+Additional agents available during setup/review (NOT in the candle-close pipeline):
+
+- **strategy-designer** — redesigns failing strategies during Phase 1.
+  Invoked serially after each backtest FAIL, one round at a time (max 3 rounds).
+  Tools: Read, Edit, Write. May modify `daemon/strategies/<name>.py`,
+  `daemon/strategies/__init__.py`, `config.yaml` params, and create new strategy
+  files. Never touches `risk:` config or enables strategies.
+
+- **strategy-monitor** — checks live forward-test health vs backtest baselines.
+  Invoked during Phase 3 reviews. Reads `state/journal.json`, updates
+  `state/strategy_health.json`, and returns `action: NONE|REDESIGN_*|DISABLE_*`.
+  If REDESIGN, re-enter Phase 1 for that strategy before re-enabling it.
+  Tools: Read, Write.
+
 ## Pipeline for candle-close events (STRICTLY SERIAL — one subagent at a time, never in parallel)
 
 1. **Read state** — `state/journal.json` and `config.yaml`. If `KILL_SWITCH`
