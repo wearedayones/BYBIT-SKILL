@@ -2,7 +2,7 @@
   "mcpServers": {
     "bybit": {
       "command": "npx",
-      "args": ["-y", "<your-bybit-mcp-package>"],
+      "args": ["-y", "bybit-official-trading-server@latest"],
       "env": {
         "BYBIT_API_KEY": "${BYBIT_API_KEY}",
         "BYBIT_API_SECRET": "${BYBIT_API_SECRET}",

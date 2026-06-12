@@ -37,11 +37,13 @@ go-live gates — pausing for your confirmation at each decision point.
    pip install pybit pyyaml
    npm install -g @anthropic-ai/claude-code
    ```
-2. **Add your Bybit MCP server** to the project (`.mcp.json` in project root),
-   e.g. whichever Bybit MCP you use. Run `claude mcp list` to confirm, then
-   check the exact tool names — if they're not exposed as `mcp__bybit__*`,
-   update the `--allowedTools` list in `daemon/candle_watcher.py` and the
-   `tools:` lines in `.claude/agents/*.md`.
+2. **Bybit MCP server** — preconfigured in `.mcp.json` with the official
+   [bybit-exchange/trading-mcp](https://github.com/bybit-exchange/trading-mcp)
+   (`npx -y bybit-official-trading-server@latest`, so it always pulls the
+   latest version — no manual install). Run `claude mcp list` to confirm it
+   connects. Tools are exposed as `mcp__bybit__*`, matching the
+   `--allowedTools` list in `daemon/candle_watcher.py` and the `tools:` lines
+   in `.claude/agents/*.md`.
 3. **API key**: create a Bybit key with trade permission ONLY — no withdrawal,
    no transfer. Start on **testnet** (`testnet: true` in `config.yaml`).
 4. **Run the watcher**
