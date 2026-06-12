@@ -66,3 +66,11 @@ monitor:
   degradation_threshold_pct: 50   # flag if live exp < 50% of backtest exp
   drawdown_alert_multiple: 1.5    # flag if live DD > 1.5x backtest max DD
   min_trades_for_comparison: 50   # don't compare until N live trades exist
+
+# ---- Autonomous operation ----
+# Set once; agent handles everything else with no human gates.
+autonomous:
+  auto_go_live: false          # set true to allow agent to flip testnet: false after validation
+  auto_enable_strategies: true # automatically set enabled: true after all 4 gates pass
+  auto_disable_degraded: true  # automatically set enabled: false on DISABLE_RECOMMENDED
+  auto_write_env: true         # auto-create .env from BYBIT_API_KEY/SECRET env vars
