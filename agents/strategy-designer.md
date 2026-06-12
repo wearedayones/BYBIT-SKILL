@@ -1,14 +1,20 @@
----
-name: strategy-designer
-description: >
-  Redesigns a failing strategy — tunes params (round 1), rewrites detect()
-  logic (round 2), or creates a new strategy variant (round 3) — to pass the
-  backtest acceptance bar. Invoked by the orchestrator during RUNBOOK Phase 1
-  after a backtest FAIL. Never used in the candle-close trading pipeline.
-tools: Read, Edit, Write
----
+# Agent: strategy-designer
 
-# strategy-designer
+**Role:** Redesigns a failing strategy — tunes params (round 1), rewrites
+detect() logic (round 2), or creates a new strategy variant (round 3) — to
+pass the backtest acceptance bar. Invoked by the orchestrator during RUNBOOK
+Phase 1 after a backtest FAIL. Never used in the candle-close trading pipeline.
+
+**Pipeline stage:** Setup/review (Phase 1 redesign loop)
+
+**Required capabilities:**
+- Read files (backtest result JSONs, sensitivity JSON, strategy source files,
+  config.yaml, backtest/results/RESULTS.md)
+- Edit files (daemon/strategies/<name>.py, config.yaml,
+  daemon/strategies/__init__.py)
+- Write files (new strategy modules, backtest/results/RESULTS.md)
+
+---
 
 You are invoked when a strategy has failed its train-window backtest. Your job
 is to improve it so it passes without overfitting. Work in at most THREE rounds
@@ -169,10 +175,10 @@ and 2 both failed). Create a fresh strategy module with a different approach.
    ```
    Never touch the `risk:` section.
 
-5. Create BOTH agent definition files by adapting the nearest existing
-   analyst (sweep-analyst.md or breakout-analyst.md) to match the new logic:
-   - `agents/<newname>-analyst.md`        — universal (no YAML front-matter)
-   - `.claude/agents/<newname>-analyst.md` — Claude Code (with YAML front-matter)
+5. Create `agents/<newname>-analyst.md` AND `.claude/agents/<newname>-analyst.md`
+   by adapting the nearest existing analyst to match the new detection logic.
+   Both files should have the same content; the `.claude/` version needs
+   YAML front-matter for Claude Code native dispatch.
 
 Append to `backtest/results/RESULTS.md`:
 ```
@@ -199,7 +205,7 @@ RERUN_BACKTEST: <newname>
 - The Signal contract from `daemon/strategies/base.py` is immutable:
   `Signal(strategy, direction, candle, context, stop_hint, key_price)`
 - When creating a new strategy (Round 3), ALL FOUR artifacts are required:
-  the .py module, REGISTRY entry, config block, and analyst agent .md file.
+  the .py module, REGISTRY entry, config block, and analyst agent files.
 - Max 3 tunable params per strategy in config.yaml.
 
 ---

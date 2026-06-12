@@ -3,8 +3,12 @@ candle_watcher.py — the trigger layer.
 
 Subscribes to Bybit's public kline.15 WebSocket. When a candle arrives with
 confirm=true (candle officially closed), runs the deterministic sweep
-pre-filter. Only if a candidate exists does it invoke Claude Code headless
-(`claude -p`) to run the multi-agent pipeline.
+pre-filter. Only if a candidate exists does it invoke the configured AI agent
+to run the multi-agent pipeline.
+
+Agent backend is set via config.yaml → agent.backend (default: claude_code).
+Supported backends: claude_code, openai, openai_compatible, http.
+See daemon/agent_runner.py for details.
 
 Run:  python daemon/candle_watcher.py
 Stop trading instantly:  touch KILL_SWITCH   (in project root)
@@ -26,6 +30,7 @@ from sweep_filter import Candle
 from strategies import enabled_strategies
 from strategies.regime import detect_regime, vol_regime
 from notifier import alert
+from agent_runner import AgentRunner
 
 ROOT = Path(__file__).resolve().parent.parent
 CFG = yaml.safe_load((ROOT / "config.yaml").read_text())
@@ -43,6 +48,14 @@ candles: list[Candle] = []
 last_invoke_ts = 0
 last_kline_ts = 0.0   # wall-clock time of last confirmed kline (watchdog)
 candles_since_reconcile = 0
+_runner: AgentRunner | None = None
+
+
+def get_runner() -> AgentRunner:
+    global _runner
+    if _runner is None:
+        _runner = AgentRunner(CFG)
+    return _runner
 
 
 def load_env_keys() -> tuple[str, str]:
@@ -141,7 +154,8 @@ def reconcile_positions():
         log(f"reconcile OK: {len(live)} open position(s) match journal.")
 
 
-def invoke_claude(signal, bracket_cfg, shadow=False):
+def invoke_agent(signal, bracket_cfg, shadow=False):
+    """Invoke the configured AI agent backend to run the multi-agent pipeline."""
     global last_invoke_ts
     cooldown = CFG.get("invoke_cooldown_sec", 900)
     if time.time() - last_invoke_ts < cooldown:
@@ -175,50 +189,55 @@ def invoke_claude(signal, bracket_cfg, shadow=False):
         "against max_open_positions or traded_levels_today."
     ) if shadow else ""
 
+    # ORCHESTRATOR.md is the framework-agnostic canonical prompt; CLAUDE.md is
+    # the Claude Code shim that points back to it.  Either file works — the
+    # agent backend reads whichever is appropriate for its framework.
     prompt = (
         f"A 15m candle just closed and the '{signal.strategy}' pre-filter flagged a signal. "
-        f"Follow the pipeline in CLAUDE.md exactly: dispatch {signal.strategy}-analyst, then "
-        "event-guard, then risk-manager, then (only if all approve) executor — SERIALLY, one "
-        "at a time. Update state/journal.json before exiting, whatever the outcome."
+        f"Follow the pipeline in ORCHESTRATOR.md exactly: dispatch {signal.strategy}-analyst, "
+        "then event-guard, then risk-manager, then (only if all approve) executor — SERIALLY, "
+        "one at a time. Update state/journal.json before exiting, whatever the outcome."
         f"{shadow_note}\n\n"
         f"EVENT DATA:\n{json.dumps(payload, indent=2)}"
     )
 
-    cmd = [
-        "claude", "-p", prompt,
-        "--allowedTools", "mcp__bybit__*", "Read", "Write", "Edit", "WebFetch", "WebSearch", "Task",
-        "--max-turns", str(CFG.get("max_turns", 30)),
-        "--output-format", "json",
-    ]
-    log(f"Invoking Claude Code: [{signal.strategy}] {signal.direction} @ key {signal.key_price}")
-    # Retry policy: retry ONLY if the CLI failed without touching the journal
-    # (i.e. it died before doing anything). Never retry after a timeout or a
+    backend = CFG.get("agent", {}).get("backend", "claude_code")
+    log(f"Invoking agent [{backend}]: [{signal.strategy}] {signal.direction} "
+        f"@ key {signal.key_price}")
+
+    runner = get_runner()
+
+    # Retry policy: retry ONLY if the agent failed without touching the journal
+    # (i.e. it crashed before doing anything). Never retry after a timeout or a
     # journal write — the pipeline may already have placed an order.
     for attempt in range(1, 4):
         journal_mtime_before = JOURNAL.stat().st_mtime if JOURNAL.exists() else 0
         try:
-            result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
-                                    timeout=CFG.get("invoke_timeout_sec", 600))
-        except subprocess.TimeoutExpired:
-            log("ERROR: Claude run timed out — check for stuck orders manually! (no retry)")
-            alert(f"Claude pipeline TIMED OUT on {SYMBOL} {signal.strategy} signal — "
+            output, returncode = runner.run(prompt)
+        except TimeoutError:
+            log("ERROR: Agent run timed out — check for stuck orders manually! (no retry)")
+            alert(f"Agent pipeline TIMED OUT on {SYMBOL} {signal.strategy} signal — "
                   "an order may be partially placed. Check the exchange.")
             return
+        except Exception as e:
+            log(f"ERROR: Agent runner raised unexpectedly: {e}")
+            output, returncode = str(e), 1
+
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        (LOGS / f"run_{stamp}.json").write_text(result.stdout or result.stderr)
-        log(f"Claude run finished (exit {result.returncode}); log: logs/run_{stamp}.json")
-        if result.returncode == 0:
+        (LOGS / f"run_{stamp}.json").write_text(output)
+        log(f"Agent run finished (exit {returncode}); log: logs/run_{stamp}.json")
+        if returncode == 0:
             return
         journal_mtime_after = JOURNAL.stat().st_mtime if JOURNAL.exists() else 0
         if journal_mtime_after != journal_mtime_before:
-            log("Claude exited non-zero but journal was modified — NOT retrying "
+            log("Agent exited non-zero but journal was modified — NOT retrying "
                 "(an order may exist). Reconcile will verify next cycle.")
             return
         if attempt < 3:
             wait = 5 * (3 ** (attempt - 1))  # 5s, 15s
-            log(f"Claude failed cleanly (attempt {attempt}/3) — retrying in {wait}s.")
+            log(f"Agent failed cleanly (attempt {attempt}/3) — retrying in {wait}s.")
             time.sleep(wait)
-    log("ERROR: Claude invocation failed 3 times — signal dropped.")
+    log("ERROR: Agent invocation failed 3 times — signal dropped.")
 
 
 def on_kline(msg):
@@ -263,7 +282,7 @@ def on_kline(msg):
                     continue
             signal = module.detect(candles, params)
             if signal:
-                invoke_claude(signal, bracket, shadow=shadow)
+                invoke_agent(signal, bracket, shadow=shadow)
                 break  # highest-priority signal wins; one invocation per candle
         else:
             log("No signal.")
