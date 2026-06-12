@@ -18,9 +18,15 @@ NAME = "trend_pullback"
 
 
 def _ema(values: list[float], period: int) -> float:
+    # SMA-seeded EMA (standard convention). A raw first-value seed over a
+    # short window leaves ~2% seed weight and can flip touch decisions;
+    # SMA seed + 3x period window keeps error < 0.1% vs full history
+    # (see tests/test_strategies.py).
+    if len(values) < period:
+        return sum(values) / len(values)
+    e = sum(values[:period]) / period
     k = 2 / (period + 1)
-    e = values[0]
-    for v in values[1:]:
+    for v in values[period:]:
         e = v * k + e * (1 - k)
     return e
 
@@ -28,12 +34,12 @@ def _ema(values: list[float], period: int) -> float:
 def detect(candles, params) -> Signal | None:
     fast_n = params.get("ema_fast", 21)
     slow_n = params.get("ema_slow", 55)
-    if len(candles) < slow_n + 5:
+    if len(candles) < slow_n * 3 + 2:
         return None
 
     closes = [c.close for c in candles]
-    ema_fast = _ema(closes[-(slow_n * 2):], fast_n)
-    ema_slow = _ema(closes[-(slow_n * 2):], slow_n)
+    ema_fast = _ema(closes[-(slow_n * 3):], fast_n)
+    ema_slow = _ema(closes[-(slow_n * 3):], slow_n)
     c = candles[-1]
 
     # Uptrend: pullback touches fast EMA, candle closes back above it, green

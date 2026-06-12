@@ -38,10 +38,13 @@ def detect(candles, params) -> Signal | None:
     period = params.get("rsi_period", 14)
     oversold = params.get("oversold", 30)
     overbought = params.get("overbought", 70)
-    if len(candles) < period * 3 + 2:
+    # Wilder RSI is recursive: with only 3x period of history the smoothed
+    # averages haven't converged (off by several RSI points). 8x period keeps
+    # truncation error < 1 RSI point (see tests/test_strategies.py).
+    if len(candles) < period * 8 + 2:
         return None
 
-    closes_prev = [c.close for c in candles[:-1]][-(period * 3):]
+    closes_prev = [c.close for c in candles[:-1]][-(period * 8):]
     rsi_prev = _rsi(closes_prev, period)
     c = candles[-1]
     recent = candles[-4:-1]

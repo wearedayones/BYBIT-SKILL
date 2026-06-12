@@ -34,9 +34,26 @@ KILL = ROOT / "KILL_SWITCH"
 SYMBOL = CFG["symbol"]
 TESTNET = CFG["testnet"]
 INTERVAL = str(CFG.get("timeframe", "15"))  # set by Phase 1 to the validated timeframe
+INTERVAL_MS = int(INTERVAL) * 60_000
+JOURNAL = ROOT / "state" / "journal.json"
+RECONCILE_EVERY = 8  # candles between position reconciliations (2h on 15m)
 
 candles: list[Candle] = []
 last_invoke_ts = 0
+last_kline_ts = 0.0   # wall-clock time of last confirmed kline (watchdog)
+candles_since_reconcile = 0
+
+
+def load_env_keys() -> tuple[str, str]:
+    """Read API key/secret from .env (written by bootstrap_env)."""
+    env_path = ROOT / ".env"
+    kv = {}
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                kv[k.strip()] = v.strip()
+    return kv.get("BYBIT_API_KEY", ""), kv.get("BYBIT_API_SECRET", "")
 
 
 def bootstrap_env():
@@ -66,13 +83,58 @@ def log(msg: str):
 
 
 def bootstrap_history():
-    """Pull last 200 closed candles via REST so levels exist immediately."""
+    """Pull last 400 closed candles via REST so levels exist immediately.
+    (trend_pullback with ema_slow=89 needs 269 candles of history.)"""
     http = HTTP(testnet=TESTNET)
-    res = http.get_kline(category="linear", symbol=SYMBOL, interval=INTERVAL, limit=200)
+    res = http.get_kline(category="linear", symbol=SYMBOL, interval=INTERVAL, limit=400)
     rows = sorted(res["result"]["list"], key=lambda r: int(r[0]))
     for r in rows[:-1]:  # drop the still-open candle
         candles.append(Candle(int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])))
     log(f"Bootstrapped {len(candles)} candles for {SYMBOL}")
+
+
+def reconcile_positions():
+    """Compare exchange truth against journal.open_positions. The exchange is
+    ALWAYS the source of truth — on mismatch, journal an ALERT and adopt it.
+    Runs at startup (crash recovery) and every RECONCILE_EVERY candles."""
+    key, secret = load_env_keys()
+    if not key or not secret:
+        log("reconcile: no API keys in .env — skipped (read-only mode).")
+        return
+    try:
+        http = HTTP(testnet=TESTNET, api_key=key, api_secret=secret)
+        res = http.get_positions(category="linear", symbol=SYMBOL)
+        live = [
+            {"symbol": p["symbol"], "side": p["side"].lower(),
+             "qty": p["size"], "entry": float(p.get("avgPrice") or 0),
+             "sl": float(p.get("stopLoss") or 0), "tp": float(p.get("takeProfit") or 0)}
+            for p in res["result"]["list"] if float(p.get("size") or 0) > 0
+        ]
+    except Exception as e:
+        log(f"reconcile: REST query failed ({e}) — will retry next cycle.")
+        return
+
+    journal = json.loads(JOURNAL.read_text()) if JOURNAL.exists() else {}
+    recorded = journal.get("open_positions", [])
+
+    def keyset(positions):
+        return {(p.get("symbol"), p.get("side"), str(p.get("qty"))) for p in positions}
+
+    if keyset(live) != keyset(recorded):
+        log(f"reconcile MISMATCH: exchange={live} journal={recorded} — adopting exchange truth.")
+        journal["open_positions"] = live
+        journal.setdefault("runs", []).append({
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "event": "position_reconcile_mismatch",
+            "decision": "ALERT",
+            "reasoning_summary": "Exchange positions diverged from journal "
+                                 "(daemon crash or missed fill). Journal updated to exchange truth.",
+            "exchange_positions": live,
+            "journal_positions_before": recorded,
+        })
+        JOURNAL.write_text(json.dumps(journal, indent=2))
+    else:
+        log(f"reconcile OK: {len(live)} open position(s) match journal.")
 
 
 def invoke_claude(signal, bracket_cfg):
@@ -115,21 +177,41 @@ def invoke_claude(signal, bracket_cfg):
         "--output-format", "json",
     ]
     log(f"Invoking Claude Code: [{signal.strategy}] {signal.direction} @ key {signal.key_price}")
-    try:
-        result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
-                                timeout=CFG.get("invoke_timeout_sec", 600))
+    # Retry policy: retry ONLY if the CLI failed without touching the journal
+    # (i.e. it died before doing anything). Never retry after a timeout or a
+    # journal write — the pipeline may already have placed an order.
+    for attempt in range(1, 4):
+        journal_mtime_before = JOURNAL.stat().st_mtime if JOURNAL.exists() else 0
+        try:
+            result = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True,
+                                    timeout=CFG.get("invoke_timeout_sec", 600))
+        except subprocess.TimeoutExpired:
+            log("ERROR: Claude run timed out — check for stuck orders manually! (no retry)")
+            return
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         (LOGS / f"run_{stamp}.json").write_text(result.stdout or result.stderr)
         log(f"Claude run finished (exit {result.returncode}); log: logs/run_{stamp}.json")
-    except subprocess.TimeoutExpired:
-        log("ERROR: Claude run timed out — check for stuck orders manually!")
+        if result.returncode == 0:
+            return
+        journal_mtime_after = JOURNAL.stat().st_mtime if JOURNAL.exists() else 0
+        if journal_mtime_after != journal_mtime_before:
+            log("Claude exited non-zero but journal was modified — NOT retrying "
+                "(an order may exist). Reconcile will verify next cycle.")
+            return
+        if attempt < 3:
+            wait = 5 * (3 ** (attempt - 1))  # 5s, 15s
+            log(f"Claude failed cleanly (attempt {attempt}/3) — retrying in {wait}s.")
+            time.sleep(wait)
+    log("ERROR: Claude invocation failed 3 times — signal dropped.")
 
 
 def on_kline(msg):
+    global last_kline_ts, candles_since_reconcile
     try:
         data = msg["data"][0]
         if not data.get("confirm"):
             return  # candle still forming
+        last_kline_ts = time.time()
         c = Candle(int(data["start"]), float(data["open"]), float(data["high"]),
                    float(data["low"]), float(data["close"]), float(data["volume"]))
         if candles and c.ts <= candles[-1].ts:
@@ -137,6 +219,11 @@ def on_kline(msg):
         candles.append(c)
         del candles[:-400]
         log(f"Candle closed: O{c.open} H{c.high} L{c.low} C{c.close}")
+
+        candles_since_reconcile += 1
+        if candles_since_reconcile >= RECONCILE_EVERY:
+            candles_since_reconcile = 0
+            reconcile_positions()
 
         if KILL.exists():
             log("KILL_SWITCH present — analysis suppressed.")
@@ -161,15 +248,39 @@ def on_kline(msg):
         log(f"on_kline error: {e}")
 
 
+def start_ws() -> WebSocket:
+    ws = WebSocket(testnet=TESTNET, channel_type="linear")
+    ws.kline_stream(interval=INTERVAL, symbol=SYMBOL, callback=on_kline)
+    return ws
+
+
 def main():
+    global last_kline_ts
     LOGS.mkdir(exist_ok=True)
     bootstrap_env()
     bootstrap_history()
-    ws = WebSocket(testnet=TESTNET, channel_type="linear")
-    ws.kline_stream(interval=INTERVAL, symbol=SYMBOL, callback=on_kline)
-    log("Watching kline.15 stream… (touch KILL_SWITCH to halt trading)")
+    reconcile_positions()  # crash recovery: exchange truth wins on restart
+    ws = start_ws()
+    last_kline_ts = time.time()
+    log(f"Watching kline.{INTERVAL} stream… (touch KILL_SWITCH to halt trading)")
+
+    # Watchdog: a WebSocket can die silently. If no confirmed kline arrives
+    # within 2.5x the interval, tear down and reconnect.
+    stale_after = 2.5 * INTERVAL_MS / 1000
     while True:
-        time.sleep(30)
+        time.sleep(60)
+        if time.time() - last_kline_ts > stale_after:
+            log(f"WATCHDOG: no kline for > {stale_after:.0f}s — reconnecting WebSocket.")
+            try:
+                ws.exit()
+            except Exception as e:
+                log(f"WATCHDOG: ws.exit() error ignored: {e}")
+            try:
+                ws = start_ws()
+                last_kline_ts = time.time()
+                log("WATCHDOG: WebSocket reconnected.")
+            except Exception as e:
+                log(f"WATCHDOG: reconnect failed ({e}) — retrying in 60s.")
 
 
 if __name__ == "__main__":
