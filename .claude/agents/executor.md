@@ -21,7 +21,17 @@ Procedure:
    - Order exists but TP/SL missing → set them via the trading-stop endpoint;
      re-verify. Still missing → CANCEL the order/close the position and report ALERT.
    - Order call failed → do NOT retry more than once. Report FAILED.
-4. Never place a second order in the same run. Never modify config or state
+4. RECORD EXECUTION QUALITY (mandatory — feeds the TCA loop):
+   - `intended_entry` = the price the risk-manager sized against (the approved
+     entry), captured BEFORE you place the order.
+   - If the order filled (market, or limit already executed): fetch the actual
+     fill via getOrderDetail / getTradeHistory and record `fill_price` and
+     `fill_ts`. Compute `slippage_bps`, sign-adjusted so positive = cost:
+     - Buy:  `(fill_price - intended_entry) / intended_entry * 10000`
+     - Sell: `(intended_entry - fill_price) / intended_entry * 10000`
+   - If the order is resting (unfilled limit): set `fill_price: null`,
+     `slippage_bps: null` — the execution-auditor picks it up after the fill.
+5. Never place a second order in the same run. Never modify config or state
    beyond what the orchestrator asks.
 
 Output exactly this JSON and nothing else:
@@ -33,6 +43,11 @@ Output exactly this JSON and nothing else:
   "order_link_id": "...",
   "side": "Buy" | "Sell",
   "qty": 0.0,
+  "intended_entry": 0.0,
+  "fill_price": 0.0,
+  "slippage_bps": 0.0,
+  "arrival_ts": "<utc iso when order was sent>",
+  "fill_ts": "<utc iso or null>",
   "entry": 0.0,
   "sl": 0.0,
   "tp": 0.0,

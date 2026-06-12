@@ -213,11 +213,26 @@ def main():
     ap.add_argument("--param", action="append",
                     help="generic strategy param override, e.g. --param range_lookback=64")
     ap.add_argument("--fees-bps", type=float, default=5.5)
-    ap.add_argument("--slip-bps", type=float, default=2.0)
+    ap.add_argument("--slip-bps", default="2.0",
+                    help="slippage in bps, or 'live' to use the TCA-calibrated "
+                         "value from state/tca.json")
     ap.add_argument("--out", default=None, help="write trades csv + stats json here")
     ap.add_argument("--monte-carlo", type=int, default=0,
                     help="shuffle trade order N times and report drawdown distribution")
     args = ap.parse_args()
+
+    # Resolve slippage: 'live' reads the TCA-calibrated value (never below
+    # the default — see daemon/tca.py).
+    if str(args.slip_bps).lower() == "live":
+        tca_path = ROOT.parent / "state" / "tca.json"
+        if tca_path.exists():
+            args.slip_bps = float(json.loads(tca_path.read_text())["calibrated_slip_bps"])
+            print(f"Using TCA-calibrated live slippage: {args.slip_bps} bps")
+        else:
+            args.slip_bps = 2.0
+            print("No state/tca.json yet — falling back to default 2.0 bps")
+    else:
+        args.slip_bps = float(args.slip_bps)
 
     cfg = yaml.safe_load((ROOT.parent / "config.yaml").read_text())
     scfg = cfg["strategies"][args.strategy]
