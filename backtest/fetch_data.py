@@ -9,10 +9,13 @@ Output:
 
 import argparse
 import csv
+import sys
 import time
 from pathlib import Path
 
 from pybit.unified_trading import HTTP
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 ROOT = Path(__file__).resolve().parent
 
@@ -60,6 +63,8 @@ def main():
         w.writerow(["ts", "open", "high", "low", "close", "volume"])
         w.writerows(data)
     print(f"Saved {len(data)} candles -> {path}")
+    from data_integrity import check
+    check(str(path), interval=int(args.interval))
 
 
 if __name__ == "__main__":

@@ -49,33 +49,42 @@ strategies and keeps searching. Two things never change:
    python backtest/fetch_data.py --symbol <SYM> --days 365 --interval <TF>
    ```
    (e.g. BTCUSDT/ETHUSDT/SOLUSDT × 15/60). Output:
-   `backtest/data/<SYM>_<TF>m.csv`. Determine the split per file:
+   `backtest/data/<SYM>_<TF>m.csv`. `fetch_data.py` runs a data integrity
+   check automatically after download — fix FAIL verdicts before proceeding.
+   Determine the split per file:
    - TRAIN_START = first candle date, TRAIN_END ≈ +274 days (~9 months)
    - TEST_START = TRAIN_END, TEST_END = last candle date (~3 months)
 
 ### Discovery sweep: library × symbols × timeframes
-7. For every (strategy, symbol, timeframe) combination, run the TRAIN baseline:
+7. For every (strategy, symbol, timeframe) combination, run the **optimizer**
+   to sweep ALL parameter combinations and find the best config on the TRAIN
+   window:
    ```bash
-   python backtest/backtest.py --csv backtest/data/<SYM>_<TF>m.csv \
-       --strategy <name> --start <TRAIN_START> --end <TRAIN_END>
+   python backtest/optimize.py --csv backtest/data/<SYM>_<TF>m.csv \
+       --strategy <name> --start <TRAIN_START> --end <TRAIN_END> \
+       --top-n 5 --monte-carlo 500 --workers 4
    ```
-   Record every result in a discovery table in `backtest/results/RESULTS.md`
-   (strategy, symbol, TF, trades, exp_R, PF, DD, verdict). Rank candidates:
-   - Combos that PASS train outright → promote straight to step 8.
-   - Combos that FAIL but show promise (expectancy_R > -0.05 with >= 80
-     trades) → run the redesign loop (max 3 rounds) on the BEST one per
-     strategy family, using the strategy-designer prompt:
+   The optimizer ranks all combinations by Sharpe ratio (primary) then
+   expectancy_R and applies Monte Carlo ruin filtering on the top-5.
+   Record every result in `backtest/results/RESULTS.md`
+   (strategy, symbol, TF, trades, exp_R, Sharpe, PF, DD, verdict).
+
+   - Optimizer exits 0 (best config PASSES + ruin < 5%) → use the best
+     params from `backtest/results/optimize_<name>_<stamp>.json` and promote
+     straight to step 8.
+   - Optimizer exits 1 (no config passes train thresholds) → enter the
+     redesign loop (max 3 rounds) using the strategy-designer prompt:
      ```
      STRATEGY: <name>
      ROUND: <1|2|3>
-     RESULTS_JSON_PATH: backtest/results/<name>_<latest_stamp>.json
+     RESULTS_JSON_PATH: backtest/results/optimize_<name>_<latest_stamp>.json
      SENSITIVITY_JSON_PATH: <path or "none">
      TRAIN_START / TRAIN_END / CSV_PATH / CHANGELOG: <...>
      Follow your Round <N> instructions. Output RERUN_BACKTEST: <name> when done.
      ```
-     Re-run the train backtest after each round; run sensitivity after round 1.
-   - Hopeless combos (deeply negative expectancy) → record and skip; do not
-     waste redesign rounds on them.
+     Re-run `optimize.py` after each round; run sensitivity after round 1.
+   - Hopeless combos (all combinations with deeply negative expectancy) →
+     record and skip; do not waste redesign rounds on them.
 
 8. Each combo that passes train runs the full validation suite ON ITS OWN
    symbol/timeframe data:

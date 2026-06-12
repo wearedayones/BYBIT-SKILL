@@ -24,6 +24,8 @@ Exit codes:
 import argparse
 import csv
 import json
+import math
+import statistics as _stats
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -120,7 +122,7 @@ def run(candles, strategy, fcfg, bcfg, fees_bps=5.5, slip_bps=2.0, max_hold=96, 
     return trades
 
 
-def report(trades, label=""):
+def report(trades, label="", days_covered: float = None):
     if not trades:
         print(f"{label}: no trades.")
         return {}
@@ -134,6 +136,14 @@ def report(trades, label=""):
         cum += r
         peak = max(peak, cum)
         dd = max(dd, peak - cum)
+    # Sharpe: trade-level, annualised. rf = 0 (crypto).
+    std_R = _stats.stdev(rs) if len(rs) > 1 else 0.0
+    if std_R > 0 and days_covered and days_covered > 0:
+        annual_trades = len(rs) / (days_covered / 365)
+        sharpe = round(sum(rs) / len(rs) / std_R * math.sqrt(annual_trades), 2)
+    else:
+        sharpe = 0.0
+    tpm = round(len(rs) / max((days_covered or 0) / 30.44, 1), 1)
     stats = {
         "trades": len(rs),
         "win_rate_pct": round(100 * len(wins) / len(rs), 1),
@@ -141,10 +151,12 @@ def report(trades, label=""):
         "total_R": round(sum(rs), 1),
         "profit_factor": round(gross_w / gross_l, 2) if gross_l else float("inf"),
         "max_drawdown_R": round(dd, 1),
+        "sharpe_ratio": sharpe,
+        "trades_per_month": tpm,
     }
     print(f"\n== {label} ==")
     for k, v in stats.items():
-        print(f"  {k:16} {v}")
+        print(f"  {k:20} {v}")
     by_kind = {}
     for t in trades:
         by_kind.setdefault(t["kind"], []).append(t["r"])
@@ -224,11 +236,12 @@ def main():
     if args.end: candles = [c for c in candles if c.ts < ts_of(args.end)]
     span = (f"{datetime.fromtimestamp(candles[0].ts/1000, timezone.utc):%Y-%m-%d} -> "
             f"{datetime.fromtimestamp(candles[-1].ts/1000, timezone.utc):%Y-%m-%d}")
+    days_covered = (candles[-1].ts - candles[0].ts) / 86_400_000 if len(candles) > 1 else 0
     print(f"{len(candles)} candles | {span} | strategy={args.strategy} | params={fcfg} "
           f"| rr={bcfg.get('fixed_rr')} fees={args.fees_bps}bps")
 
     trades = run(candles, strategy, fcfg, bcfg, args.fees_bps, args.slip_bps)
-    stats = report(trades, span)
+    stats = report(trades, span, days_covered=days_covered)
 
     # Monte Carlo drawdown analysis
     mc_stats = {}
