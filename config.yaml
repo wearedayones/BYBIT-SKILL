@@ -111,10 +111,13 @@ invoke_timeout_sec: 600
 invoke_cooldown_sec: 900       # never invoke more than once per candle
 
 # ---- Risk rules (SHARED across ALL strategies — hard ceilings) ----
+# risk_engine.py enforces these and can only size DOWN from them, never up.
 risk:
-  risk_per_trade_pct: 1.0
+  risk_per_trade_pct: 1.0      # ceiling; quarter-Kelly + streak throttle reduce it
   max_open_positions: 1        # total, across all strategies
   max_daily_loss_pct: 3.0      # total, across all strategies
+  max_weekly_loss_pct: 6.0     # rolling 7-day; breach = no new trades for 48h
+  equity_floor_pct: 50         # equity < 50% of starting equity = hard halt + alert
   min_rr: 2.0
   max_leverage: 3
 
