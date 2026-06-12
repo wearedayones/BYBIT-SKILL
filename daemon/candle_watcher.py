@@ -141,7 +141,7 @@ def reconcile_positions():
         log(f"reconcile OK: {len(live)} open position(s) match journal.")
 
 
-def invoke_claude(signal, bracket_cfg):
+def invoke_claude(signal, bracket_cfg, shadow=False):
     global last_invoke_ts
     cooldown = CFG.get("invoke_cooldown_sec", 900)
     if time.time() - last_invoke_ts < cooldown:
@@ -155,6 +155,7 @@ def invoke_claude(signal, bracket_cfg):
         "symbol": SYMBOL,
         "timeframe": "15m",
         "utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "shadow": shadow,
         "signal": {
             "direction": signal.direction,
             "candle": signal.candle,
@@ -166,11 +167,20 @@ def invoke_claude(signal, bracket_cfg):
         "recent_candles": [asdict(c) for c in candles[-40:]],
     }
 
+    shadow_note = (
+        "\n\nSHADOW MODE: this strategy is in paper-trading evaluation. Run the FULL "
+        "pipeline (analyst, event-guard, risk-manager) exactly as normal, but the "
+        "executor must NOT place any order — instead journal the would-be bracket "
+        "with \"shadow\": true in the order block. Shadow trades do not count "
+        "against max_open_positions or traded_levels_today."
+    ) if shadow else ""
+
     prompt = (
         f"A 15m candle just closed and the '{signal.strategy}' pre-filter flagged a signal. "
         f"Follow the pipeline in CLAUDE.md exactly: dispatch {signal.strategy}-analyst, then "
         "event-guard, then risk-manager, then (only if all approve) executor — SERIALLY, one "
-        "at a time. Update state/journal.json before exiting, whatever the outcome.\n\n"
+        "at a time. Update state/journal.json before exiting, whatever the outcome."
+        f"{shadow_note}\n\n"
         f"EVENT DATA:\n{json.dumps(payload, indent=2)}"
     )
 
@@ -234,7 +244,7 @@ def on_kline(msg):
         if KILL.exists():
             log("KILL_SWITCH present — analysis suppressed.")
             return
-        for module, params, bracket in enabled_strategies(CFG):
+        for module, params, bracket, shadow in enabled_strategies(CFG):
             # Regime filter: suppress strategy if current market regime doesn't match
             regime_cfg = CFG["strategies"].get(module.NAME, {}).get("regime_filter")
             if regime_cfg and regime_cfg.get("enabled"):
@@ -253,7 +263,7 @@ def on_kline(msg):
                     continue
             signal = module.detect(candles, params)
             if signal:
-                invoke_claude(signal, bracket)
+                invoke_claude(signal, bracket, shadow=shadow)
                 break  # highest-priority signal wins; one invocation per candle
         else:
             log("No signal.")

@@ -229,6 +229,9 @@ def main():
     ap.add_argument("--out", default=None, help="write trades csv + stats json here")
     ap.add_argument("--monte-carlo", type=int, default=0,
                     help="shuffle trade order N times and report drawdown distribution")
+    ap.add_argument("--regime-split", action="store_true",
+                    help="attribute each trade to its entry regime (trending_up/"
+                         "down/ranging) and report per-regime metrics")
     args = ap.parse_args()
 
     # Resolve slippage: 'live' reads the TCA-calibrated value (never below
@@ -281,11 +284,51 @@ def main():
               f"{mc_stats['drawdown_p95']:.1f}R")
         print(f"  ruin probability      {mc_stats['ruin_pct']:.1f}%  (pass < 5%)")
 
+    # Regime-split: attribute each trade to its ENTRY regime. Kills the #1
+    # live-failure mode — a strategy that only works in one market condition.
+    regime_split = {}
+    if args.regime_split and trades:
+        from strategies.regime import detect_regime
+        idx_of = {c.ts: i for i, c in enumerate(candles)}
+        by_regime: dict[str, list[float]] = {}
+        for t in trades:
+            i = idx_of.get(t["ts"])
+            reg = detect_regime(candles[: i + 1], {}) if i is not None else "unknown"
+            by_regime.setdefault(reg, []).append(t["r"])
+
+        print(f"\n== Regime split ==")
+        print(f"{'Regime':14} {'Trades':>7} {'Exp R':>8} {'Total R':>9}")
+        active = {}
+        for reg in ("trending_up", "trending_down", "ranging"):
+            rs = by_regime.get(reg, [])
+            exp = round(sum(rs) / len(rs), 3) if rs else None
+            print(f"  {reg:12} {len(rs):>7}  "
+                  + (f"{exp:>+7.3f}R {sum(rs):>+8.1f}R" if rs else "      —         —"))
+            regime_split[reg] = {"trades": len(rs), "expectancy_R": exp}
+            if len(rs) >= 10:  # enough trades to judge this regime
+                active[reg] = exp
+        # Pass: profitable in >= min(2, n_active) active regimes, no active
+        # regime catastrophic (exp <= -0.1). Regime-filtered strategies that
+        # trade only one regime must be profitable in it.
+        if active:
+            profitable = sum(1 for e in active.values() if e > 0)
+            worst = min(active.values())
+            regime_pass = (profitable >= min(2, len(active)) and worst > -0.1)
+        else:
+            regime_pass = False  # no regime has enough trades to judge
+        regime_split["active_regimes"] = len(active)
+        regime_split["verdict"] = "PASS" if regime_pass else "FAIL"
+        print(f"  regime verdict: {regime_split['verdict']} "
+              f"(profitable in {sum(1 for e in active.values() if e > 0)}/{len(active)} "
+              f"active regimes; pass needs >= {min(2, len(active) or 1)} and worst > -0.1R)")
+
     # Pass/fail verdict
     ops = {"gt": lambda a, b: a > b, "gte": lambda a, b: a >= b, "lt": lambda a, b: a < b}
     passed = all(ops[op](stats.get(metric, -999 if op == "gt" else 9999), threshold)
                  for metric, (op, threshold) in PASS_THRESHOLDS.items())
     if mc_stats and mc_stats["ruin_pct"] >= 5.0:
+        passed = False
+    if args.regime_split and regime_split.get("verdict") == "FAIL":
         passed = False
     verdict = "PASS" if passed else "FAIL"
     print(f"\nVERDICT: {verdict}")
@@ -301,6 +344,8 @@ def main():
     }
     if mc_stats:
         record["monte_carlo"] = mc_stats
+    if regime_split:
+        record["regime_split"] = regime_split
     out_path = RESULTS_DIR / f"{args.strategy}_{stamp}.json"
     out_path.write_text(json.dumps(record, indent=2))
     print(f"Result saved: {out_path}")

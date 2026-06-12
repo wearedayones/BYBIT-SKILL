@@ -111,11 +111,31 @@ strategies and keeps searching. Two things never change:
    pass. That is exactly why all three suite gates are mandatory and why a
    marginal test-window pass with a walk-forward fail is a FAIL.
 
+8d. **Red-team gate (after all four gates pass, before enabling):**
+   Invoke the `red-team` agent with the paths to every results JSON for the
+   combo (train, walk-forward, test, second-symbol, sensitivity, optimize).
+   It tries to kill the pass: regime homogeneity, margin-of-pass, optimizer
+   selection bias, artifact inconsistency, fee realism.
+   - `CONFIRM` → proceed to step 9.
+   - `CHALLENGE: <reason>` → run the tiebreaker, ONE regime-split backtest
+     on the full data span:
+     ```bash
+     python backtest/backtest.py --csv backtest/data/<SYM>_<TF>m.csv \
+         --strategy <name> --regime-split
+     ```
+     `regime_split.verdict: PASS` (profitable in ≥ 2 active regimes — or its
+     only active regime if regime-filtered — and no active regime below
+     −0.1R) overrides the challenge → proceed to step 9. FAIL → the combo
+     is rejected; record both the challenge and the regime table in
+     RESULTS.md and return it to discovery.
+
 9. **Autonomous outcomes — no confirmation step:**
-   - A combo passes ALL four gates → if `autonomous.auto_enable_strategies:
-     true`: set `symbol:` and `timeframe:` in config.yaml to the validated
-     combo, set the strategy `enabled: true`, write baseline metrics to
-     `state/strategy_health.json`, log the decision, and continue to Phase 2.
+   - A combo passes ALL four gates AND the red-team gate → if
+     `autonomous.auto_enable_strategies: true`: set `symbol:` and `timeframe:`
+     in config.yaml to the validated combo, set the strategy `enabled: true`
+     **with `shadow: true`** (paper-trade first — see Phase 3a), write
+     baseline metrics to `state/strategy_health.json`, log the decision, and
+     continue to Phase 2.
      (If multiple combos pass, prefer: highest walk-forward pct_folds_positive,
      then highest test expectancy.)
    - A strategy family exhausts 3 redesign rounds → designer outputs
@@ -157,16 +177,31 @@ strategies and keeps searching. Two things never change:
     Log: `"Daemon started at <utc>. Symbol=<SYMBOL> testnet=<bool>."`
     Run under `tmux` or `systemd` for 24/7 uptime — no human confirmation needed.
 
+13a. **Shadow promotion (paper-trade gate before real orders):**
+    Every newly validated strategy starts with `shadow: true` — the full
+    pipeline runs and journals simulated brackets, but no exchange order is
+    placed. The monitor auto-promotes (`shadow: false`) when:
+    - ≥ 50 shadow trades are journaled, AND
+    - shadow rolling expectancy ≥ 50% of the backtest expectancy.
+    If after 50 shadow trades expectancy is below that bar, treat it as a
+    REDESIGN (the backtest doesn't survive contact with live data).
+    Redesigned strategies returning from the Phase 1 loop ALSO re-enter
+    through shadow mode — nothing goes from redesign straight to real orders.
+
 14. Autonomous health monitoring:
     After every 50 signals (tracked via `state/journal.json → runs` count),
     invoke `strategy-monitor`. It reads `journal.json`, compares live metrics
-    to backtest baselines in `strategy_health.json`, and writes its action:
+    to backtest baselines in `strategy_health.json` (including live IC and
+    TCA slippage), and writes its action:
     - `NONE` → continue.
     - `REDESIGN_<strategy>` → immediately re-enter Phase 1 redesign loop for
       that strategy (strategy-designer → backtest → full suite). If it passes,
-      re-enable it automatically. If it fails, auto-disable and log.
+      re-enable it automatically **via shadow mode** (step 13a). If it fails,
+      auto-disable and log.
     - `DISABLE_<strategy>` → set `enabled: false` in config.yaml immediately,
       log to journal, restart daemon.
+    After every monitor run with 2+ strategies enabled, invoke
+    `portfolio-manager` to refresh `state/risk_budget.json`.
 
 15. Phase 3 exit criteria (checked automatically by the monitor):
     - >= 50 signals processed
@@ -196,6 +231,9 @@ strategies and keeps searching. Two things never change:
 17. Any parameter or strategy change → automatically re-enter Phase 1 (full
     institutional suite) before it trades. Strategy-designer proposes; the
     backtest suite validates; config.yaml is updated automatically.
+    All re-validations of strategies that have live fill history MUST use
+    `--slip-bps live` (TCA-calibrated slippage from state/tca.json) — never
+    the optimistic default.
 18. New strategies → follow the 5-step recipe in README.md, then Phase 1–3.
     No human gates in that process either.
 19. Health reviews → `strategy-monitor` runs after every 50 signals. On
