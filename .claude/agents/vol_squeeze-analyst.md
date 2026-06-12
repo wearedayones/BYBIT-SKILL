@@ -23,6 +23,16 @@ Checklist (fetch extra kline data via the Bybit MCP if needed — 1H and 4H):
    pool just outside the band with no follow-through room before the next HTF
    level, it is likelier a sweep than an expansion — REJECT.
 
+**Derivatives confirmation (mandatory — fetch via Bybit MCP):**
+
+- **Funding check** (`getFundingRateHistory`): extreme funding (|rate| > 0.05%
+  per 8h) AGAINST your trade direction means you'd join the crowded side —
+  downgrade confidence. Funding WITH the trade is a tailwind.
+- **Open interest check** (`getOpenInterest`): a real breakout/trend leg is
+  built on RISING OI (new money entering). Falling OI during the move means
+  short-covering / position closing — the move has no fuel. REJECT on falling
+  OI unless every other factor is A-grade.
+
 Output exactly this JSON and nothing else:
 
 ```json

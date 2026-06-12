@@ -37,6 +37,18 @@ For each strategy with sufficient trades, compute:
 - `rolling_win_rate = wins / count`
 - `rolling_max_drawdown_R` (peak-to-trough on the rolling equity curve)
 - `signal_rate_per_day` (signals fired / days elapsed)
+- `live_ic` — signal-quality measure over the last 30 trades. For a fixed-RR
+  bracket system the breakeven win rate is `1 / (1 + fixed_rr)` (e.g. 28.6%
+  at 2.5R), so raw win rate alone is meaningless. Compute:
+  `live_ic = rolling_win_rate − breakeven_win_rate`
+  using the strategy's configured `fixed_rr`. Positive = the signal still has
+  predictive edge; ≈0 = the signal is a coin flip paying breakeven odds.
+
+Also run the TCA check (execution quality is strategy health too):
+```bash
+python daemon/tca.py
+```
+Exit 1 means `execution_degraded` — live slippage > 2× the backtest assumption.
 
 ### 3. Compare against baselines
 
@@ -47,9 +59,17 @@ Use thresholds from `config.yaml` → `monitor:`:
 | `rolling_expectancy_R < backtest_expectancy_R × (1 - degradation_threshold_pct/100)` | DEGRADED |
 | `rolling_max_drawdown_R > backtest_max_drawdown_R × drawdown_alert_multiple` | DRAWDOWN_ALERT |
 | `signal_rate_per_day > backtest_signal_rate × 3` | REGIME_MISMATCH |
+| `live_ic < 0.02` over 30+ trades | SIGNAL_DEAD (treat as DEGRADED → redesign) |
+| `daemon/tca.py` exits 1 (slippage > 2× assumption) | EXECUTION_DEGRADED |
 | `rolling_expectancy_R <= 0` for N+ trades | DISABLE_RECOMMENDED |
 
-Status hierarchy: DISABLE_RECOMMENDED > DRAWDOWN_ALERT > DEGRADED > HEALTHY.
+Status hierarchy: DISABLE_RECOMMENDED > DRAWDOWN_ALERT > SIGNAL_DEAD > DEGRADED > HEALTHY.
+
+SIGNAL_DEAD matters even when PnL still looks fine: a few lucky exits can hide
+a signal that stopped predicting. The IC check catches decay weeks earlier.
+
+EXECUTION_DEGRADED is not a strategy flag — journal it and note in the health
+file that re-validations must run with `--slip-bps live` until it clears.
 
 ### 4. Determine action and execute immediately
 
@@ -80,6 +100,7 @@ Overwrite `state/strategy_health.json` with:
       "backtest_drawdown_R": 0.0,
       "rolling_win_rate": 0.0,
       "signal_rate_per_day": 0.0,
+      "live_ic": 0.0,
       "consecutive_degraded_checks": 0,
       "notes": ""
     }

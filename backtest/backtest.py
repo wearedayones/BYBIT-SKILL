@@ -60,10 +60,18 @@ def ts_of(date_str: str) -> int:
     return int(datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000)
 
 
-def run(candles, strategy, fcfg, bcfg, fees_bps=5.5, slip_bps=2.0, max_hold=96, warmup=200):
+def run(candles, strategy, fcfg, bcfg, fees_bps=5.5, slip_bps=2.0, max_hold=96, warmup=200,
+        allowed_vol_regimes=None):
     trades = []
     open_trade = None
     recent_levels = []  # (price, ts) of levels already traded, 1-day dedupe
+
+    # Volatility-regime filter: precompute trailing-only labels so live and
+    # backtested behavior match (see daemon/strategies/regime.py).
+    vol_labels = None
+    if allowed_vol_regimes:
+        from strategies.regime import vol_regime_series
+        vol_labels = vol_regime_series(candles)
 
     for i in range(warmup, len(candles)):
         c = candles[i]
@@ -90,6 +98,8 @@ def run(candles, strategy, fcfg, bcfg, fees_bps=5.5, slip_bps=2.0, max_hold=96, 
             continue  # one position at a time, no same-candle re-entry
 
         # --- look for a new signal ---
+        if vol_labels and vol_labels[i] not in allowed_vol_regimes:
+            continue
         cand = strategy.detect(candles[: i + 1], fcfg)
         if not cand:
             continue
@@ -255,7 +265,9 @@ def main():
     print(f"{len(candles)} candles | {span} | strategy={args.strategy} | params={fcfg} "
           f"| rr={bcfg.get('fixed_rr')} fees={args.fees_bps}bps")
 
-    trades = run(candles, strategy, fcfg, bcfg, args.fees_bps, args.slip_bps)
+    allowed_vol = scfg.get("allowed_vol_regimes")
+    trades = run(candles, strategy, fcfg, bcfg, args.fees_bps, args.slip_bps,
+                 allowed_vol_regimes=allowed_vol)
     stats = report(trades, span, days_covered=days_covered)
 
     # Monte Carlo drawdown analysis

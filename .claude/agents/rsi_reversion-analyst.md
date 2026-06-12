@@ -25,6 +25,17 @@ Checklist (fetch extra kline data via the Bybit MCP if needed — 1H and 4H):
    created the extreme was a news impulse minutes ago, skip — let event-guard
    confirm, but flag it in your reasons.
 
+**Derivatives confirmation (mandatory — fetch via Bybit MCP):**
+
+- **Funding check** (`getFundingRateHistory`): extreme funding (|rate| > 0.05%
+  per 8h) on the side you are FADING is squeeze fuel — the crowded side pays
+  to hold and unwinds violently. Upgrade. Funding extreme on YOUR side means
+  you are the crowd — downgrade.
+- **Open interest check** (`getOpenInterest`): a sharp OI drop into the
+  extreme confirms a liquidation flush — those revert hard; upgrade. Steadily
+  RISING OI into the extreme means conviction positioning (possible regime
+  change, not a stretch) — downgrade or REJECT.
+
 Output exactly this JSON and nothing else:
 
 ```json

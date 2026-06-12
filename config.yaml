@@ -19,6 +19,7 @@ strategies:
     bracket:
       stop_beyond_pct: 0.1     # SL buffer beyond stop_hint
       fixed_rr: 2.5
+    allowed_vol_regimes: [low, normal]  # realized-vol rank filter (regime.py)
     regime_filter:
       enabled: true
       ema_period: 50
@@ -69,6 +70,7 @@ strategies:
     bracket:
       stop_beyond_pct: 0.1
       fixed_rr: 2.0
+    allowed_vol_regimes: [low, normal]  # realized-vol rank filter (regime.py)
     regime_filter:
       enabled: false
       ema_period: 50
@@ -86,6 +88,7 @@ strategies:
     bracket:
       stop_beyond_pct: 0.1
       fixed_rr: 2.0
+    allowed_vol_regimes: [low, normal]  # realized-vol rank filter (regime.py)
     regime_filter:
       enabled: false           # squeeze fires at regime transitions; leave open
 
@@ -98,6 +101,7 @@ strategies:
     bracket:
       stop_beyond_pct: 0.1
       fixed_rr: 2.0
+    allowed_vol_regimes: [low, normal]  # realized-vol rank filter (regime.py)
     regime_filter:
       enabled: false
       ema_period: 50

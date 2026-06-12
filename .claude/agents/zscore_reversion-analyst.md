@@ -24,6 +24,17 @@ Checklist (fetch extra kline data via the Bybit MCP if needed — 1H and 4H):
 5. **Target sanity** — the rolling mean is the natural target. If the distance
    to the mean doesn't support the configured min RR, REJECT.
 
+**Derivatives confirmation (mandatory — fetch via Bybit MCP):**
+
+- **Funding check** (`getFundingRateHistory`): extreme funding (|rate| > 0.05%
+  per 8h) on the side you are FADING is squeeze fuel — the crowded side pays
+  to hold and unwinds violently. Upgrade. Funding extreme on YOUR side means
+  you are the crowd — downgrade.
+- **Open interest check** (`getOpenInterest`): a sharp OI drop into the
+  extreme confirms a liquidation flush — those revert hard; upgrade. Steadily
+  RISING OI into the extreme means conviction positioning (possible regime
+  change, not a stretch) — downgrade or REJECT.
+
 Output exactly this JSON and nothing else:
 
 ```json

@@ -24,7 +24,7 @@ from pybit.unified_trading import HTTP, WebSocket
 from dataclasses import asdict
 from sweep_filter import Candle
 from strategies import enabled_strategies
-from strategies.regime import detect_regime
+from strategies.regime import detect_regime, vol_regime
 
 ROOT = Path(__file__).resolve().parent.parent
 CFG = yaml.safe_load((ROOT / "config.yaml").read_text())
@@ -237,6 +237,13 @@ def on_kline(msg):
                                          ["ranging", "trending_up", "trending_down"])
                 if regime not in allowed:
                     log(f"[{module.NAME}] Regime={regime}, allowed={allowed} — skipped.")
+                    continue
+            # Volatility-regime filter (low/normal/high realized-vol rank)
+            allowed_vol = CFG["strategies"].get(module.NAME, {}).get("allowed_vol_regimes")
+            if allowed_vol:
+                vreg = vol_regime(candles)
+                if vreg not in allowed_vol:
+                    log(f"[{module.NAME}] VolRegime={vreg}, allowed={allowed_vol} — skipped.")
                     continue
             signal = module.detect(candles, params)
             if signal:

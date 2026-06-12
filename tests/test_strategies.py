@@ -167,3 +167,35 @@ def test_regime_strong_trend_detected():
     closes = [100.0 * (1.002 ** i) for i in range(600)]  # relentless uptrend
     regime = detect_regime(candles_from_closes(closes), {})
     assert regime == "trending_up"
+
+
+# ----------------------------- vol regime --------------------------------
+
+def test_vol_regime_returns_valid_label():
+    closes = random_walk(700, seed=3)
+    from strategies.regime import vol_regime
+    assert vol_regime(candles_from_closes(closes)) in ("low", "normal", "high")
+
+
+def test_vol_regime_detects_vol_spike():
+    """Calm series then a violent stretch -> current label must be 'high'."""
+    rng = random.Random(9)
+    closes, p = [], 50_000.0
+    for _ in range(600):
+        p *= 1 + rng.gauss(0, 0.001)   # calm
+        closes.append(p)
+    for _ in range(40):
+        p *= 1 + rng.gauss(0, 0.012)   # 12x the vol
+        closes.append(p)
+    from strategies.regime import vol_regime
+    assert vol_regime(candles_from_closes(closes)) == "high"
+
+
+def test_vol_regime_series_no_lookahead():
+    """Label at index i must not change when future candles are appended."""
+    from strategies.regime import vol_regime_series
+    closes = random_walk(800, seed=5)
+    candles = candles_from_closes(closes)
+    full = vol_regime_series(candles)
+    partial = vol_regime_series(candles[:600])
+    assert full[:600] == partial
