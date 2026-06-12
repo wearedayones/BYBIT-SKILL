@@ -110,68 +110,68 @@ strategies:
       allowed_regimes: [ranging]
 
 # ---- Agent backend -------------------------------------------------------
-# Select which AI agent framework runs the trading pipeline.
-# Swap `backend` to switch frameworks; credentials are read from env vars.
+# This repo is a SKILL — the AI agent framework that loads it handles its
+# own authentication. The daemon just calls that framework's headless CLI
+# with the pipeline prompt.  No API keys belong here.
 #
-# Backends:
-#   claude_code        — Claude Code CLI (default; requires `claude` on PATH)
-#   openai             — OpenAI API  (set OPENAI_API_KEY)
-#   openai_compatible  — any OpenAI-compatible endpoint (Ollama, LM Studio,
-#                        Hermes, OpenClaw — set api_key_env + base_url)
-#   http               — fully generic HTTP POST (Hermas, custom agents)
+# Set backend to whichever CLI is installed. Built-in presets (no extra
+# config needed):
+#   claude_code  — Claude Code  (claude -p "…")          [default]
+#   codex        — OpenAI Codex CLI  (codex exec …)
+#   gemini       — Google Gemini CLI  (gemini --yolo …)
+#   opencode     — OpenCode  (opencode run …)
+#   aider        — Aider  (aider --yes --message …)
+#   custom       — anything else: define command below
+#
+# For a CLI not listed above, use backend: custom and fill in command:
+#   agent:
+#     backend: custom
+#     custom:
+#       command: ["myagent", "run", "--prompt", "{prompt}"]
+#       timeout_sec: 600
+#
+# The {prompt} placeholder is required — that is where the pipeline prompt
+# is injected. The rest of argv is passed verbatim to subprocess.
 # -------------------------------------------------------------------------
 agent:
-  backend: claude_code          # change this to switch frameworks
+  backend: claude_code      # change this to your installed agent CLI
 
-  # ---- Claude Code CLI ----
-  claude_code:
-    executable: claude          # path to claude binary (or just "claude" if on PATH)
-    allowed_tools:
-      - "mcp__bybit__*"
-      - Read
-      - Write
-      - Edit
-      - WebFetch
-      - WebSearch
-      - Task
-    max_turns: 30
-    output_format: json
-    timeout_sec: 600
-    # system_prompt_file: ORCHESTRATOR.md   # optional: explicit system prompt file
+  # Override timeout for any backend (seconds). Default: invoke_timeout_sec.
+  timeout_sec: 600
 
-  # ---- OpenAI / Codex / o-series ----
-  openai:
-    api_key_env: OPENAI_API_KEY           # env var that holds the key
-    base_url: https://api.openai.com/v1   # change for proxies / Azure
-    model: gpt-4o
-    max_tokens: 16000
-    temperature: 0
-    timeout_sec: 600
-    system_prompt_file: ORCHESTRATOR.md   # universal system prompt
+  # ---- Per-backend overrides (optional) ----
+  # Uncomment and edit only what you need to change from the preset.
 
-  # ---- OpenAI-compatible  (Ollama, LM Studio, Hermes, OpenClaw …) ----
-  openai_compatible:
-    api_key_env: AGENT_API_KEY            # env var (use "none" if no auth)
-    base_url: http://localhost:11434/v1   # example: Ollama default port
-    model: llama3                         # replace with your model name
-    max_tokens: 16000
-    temperature: 0
-    timeout_sec: 600
-    system_prompt_file: ORCHESTRATOR.md
+  # claude_code:
+  #   command:
+  #     - claude
+  #     - "-p"
+  #     - "{prompt}"
+  #     - "--allowedTools"
+  #     - "mcp__bybit__*"
+  #     - Read
+  #     - Write
+  #     - Edit
+  #     - WebFetch
+  #     - WebSearch
+  #     - Task
+  #     - "--max-turns"
+  #     - "30"
+  #     - "--output-format"
+  #     - json
+  #   timeout_sec: 600
 
-  # ---- Generic HTTP POST  (Hermas, custom agent servers) ----
-  http:
-    url: http://localhost:8080/run        # agent endpoint
-    timeout_sec: 600
-    system_prompt_file: ORCHESTRATOR.md
-    # headers:
-    #   Authorization: "Bearer ${AGENT_API_KEY}"   # ${VAR} expands from env
-    # body_template: '{"prompt":"{prompt}","system":"{system}"}'
-    # response_field: output              # dot-path to text in the JSON response
+  # codex:
+  #   command: ["codex", "exec", "--full-auto", "{prompt}"]
+  #   timeout_sec: 600
 
-# ---- Invocation timing (shared across all backends) ----
-invoke_timeout_sec: 600
-invoke_cooldown_sec: 900       # never invoke more than once per candle
+  # gemini:
+  #   command: ["gemini", "--yolo", "-p", "{prompt}"]
+  #   timeout_sec: 600
+
+  # custom:
+  #   command: ["myagent", "run", "--prompt", "{prompt}"]
+  #   timeout_sec: 600
 
 # ---- Risk rules (SHARED across ALL strategies — hard ceilings) ----
 # risk_engine.py enforces these and can only size DOWN from them, never up.

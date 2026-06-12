@@ -1,61 +1,83 @@
 # Agent Index — Universal Sub-Agent Definitions
 
 This directory contains framework-agnostic definitions for every sub-agent in
-the trading system. These files work with any LLM framework that can:
-1. Load a markdown file as a system prompt
-2. Call the Bybit REST API (via MCP or direct HTTP / pybit)
-3. Read and write files in the repository
+the trading system. This repo is a **skill** — the AI agent framework that
+loads and runs it handles its own authentication. No API keys belong here.
 
-## Quick-start for each framework
+The daemon's only job is to call your agent's headless CLI with the pipeline
+prompt. Which CLI it calls is set by one line in `config.yaml → agent.backend`.
 
-### Claude Code (native)
-Agent definitions are also present in `.claude/agents/*.md` with YAML
-front-matter for native dispatch. Claude Code loads them automatically.
-No extra wiring needed.
+---
 
-### OpenAI / Codex / o-series
-In `config.yaml` set:
+## Quick-start: pick your CLI
+
+### Claude Code (default, no config change needed)
+```bash
+pip install -r requirements.txt
+python daemon/candle_watcher.py
+```
+The daemon runs `claude -p "<prompt>" --allowedTools mcp__bybit__* …` for you.
+
+---
+
+### OpenAI Codex CLI
+Install the Codex CLI and authenticate it (`codex login`), then:
+```yaml
+# config.yaml
+agent:
+  backend: codex
+```
+The daemon runs `codex exec --full-auto "<prompt>"`.
+
+---
+
+### Google Gemini CLI
+Install and authenticate the Gemini CLI (`gemini auth`), then:
 ```yaml
 agent:
-  backend: openai
-  openai:
-    api_key_env: OPENAI_API_KEY
-    model: gpt-4o                   # or o3, o4-mini, etc.
-    system_prompt_file: ORCHESTRATOR.md
+  backend: gemini
 ```
-Then run the daemon normally. The orchestrator prompt is loaded from
-`ORCHESTRATOR.md`; sub-agent definitions are in this directory.
+The daemon runs `gemini --yolo -p "<prompt>"`.
 
-To dispatch a sub-agent, include its `agents/<name>.md` content in a
-second `system` message or in the user prompt as a quoted block.
+---
 
-### Hermes / OpenClaw / any OpenAI-compatible endpoint
+### OpenCode
 ```yaml
 agent:
-  backend: openai_compatible
-  openai_compatible:
-    api_key_env: AGENT_API_KEY      # or leave blank if no auth
-    base_url: http://localhost:11434/v1   # your endpoint
-    model: your-model-name
-    system_prompt_file: ORCHESTRATOR.md
+  backend: opencode
 ```
+The daemon runs `opencode run "<prompt>"`.
 
-### Generic HTTP (Hermas, custom agent servers)
+---
+
+### Aider
 ```yaml
 agent:
-  backend: http
-  http:
-    url: http://localhost:8080/run
-    system_prompt_file: ORCHESTRATOR.md
-    headers:
-      Authorization: "Bearer ${AGENT_API_KEY}"
-    # body_template and response_field — see agent_runner.py
+  backend: aider
 ```
+The daemon runs `aider --yes --message "<prompt>"`.
+
+---
+
+### Any other CLI (OpenClaw, Hermas, custom agents)
+Use `backend: custom` and supply the full argv list with a `{prompt}` placeholder:
+```yaml
+agent:
+  backend: custom
+  custom:
+    command: ["myagent", "run", "--headless", "{prompt}"]
+    timeout_sec: 600
+```
+The daemon substitutes the pipeline prompt for `{prompt}` and runs the command.
+
+---
 
 ## Bybit API: MCP vs direct REST
 
 All sub-agents reference Bybit tools by their MCP name (`mcp__bybit__createOrder`,
-etc.). For frameworks without MCP support, map each call to the `pybit` REST API:
+etc.). For agent CLIs that do not support MCP, point the agent at the pybit
+REST API (already in `requirements.txt`). `daemon/fetch_data.py` shows the
+connection pattern.
 
 | MCP tool name | pybit method |
 |---|---|
@@ -74,7 +96,10 @@ etc.). For frameworks without MCP support, map each call to the `pybit` REST API
 | `mcp__bybit__getRecentPublicTrades` | `HTTP.get_public_trade_history()` |
 | `mcp__bybit__getLongShortRatio` | `HTTP.get_long_short_ratio()` |
 
-Credentials come from `.env` (written by `bootstrap_env()` in `candle_watcher.py`).
+Bybit credentials come from `.env` (written on startup by `bootstrap_env()`
+in `candle_watcher.py` from `BYBIT_API_KEY` / `BYBIT_API_SECRET` env vars).
+
+---
 
 ## Agent roster
 

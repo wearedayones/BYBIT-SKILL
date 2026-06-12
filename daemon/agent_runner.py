@@ -1,228 +1,99 @@
 """
 agent_runner.py — universal AI agent invocation layer.
 
-Abstracts the AI backend so the trading daemon can call any agent framework,
-not just Claude Code. Backend is selected via config.yaml → agent.backend.
+This repo is a SKILL: it is consumed by an AI agent framework that the user
+already runs and is already authenticated with (Claude Code, Codex, Gemini
+CLI, OpenCode, OpenClaw, Hermas, ...). No API keys live here — each agent
+CLI handles its own auth.
 
-Supported backends:
-  claude_code        — Claude Code CLI  (claude -p <prompt>)
-  openai             — OpenAI API  (ChatGPT / o-series / Codex)
-  openai_compatible  — any OpenAI-compatible HTTP endpoint
-                       (Ollama, LM Studio, Hermes, OpenClaw, …)
-  http               — fully generic HTTP POST  (body_template configurable)
+The daemon only needs to hand the candle-close prompt to that agent's
+headless/non-interactive CLI. Which CLI is used is set in
+config.yaml → agent.backend, and each backend is just a command template
+where "{prompt}" is replaced with the pipeline prompt.
 
 All backends return (stdout: str, returncode: int) so the caller
 (candle_watcher.py) stays unchanged.
 """
 
-import json
-import os
 import subprocess
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-
-def _resolve_env(value: str) -> str:
-    """Expand $VAR and ${VAR} from the process environment."""
-    return os.path.expandvars(str(value))
-
-
-def _dot_get(obj, path: str):
-    """Traverse a dot-separated path like 'choices.0.message.content'."""
-    for part in path.split("."):
-        if obj is None:
-            return None
-        if isinstance(obj, dict):
-            obj = obj.get(part)
-        elif isinstance(obj, list):
-            try:
-                obj = obj[int(part)]
-            except (ValueError, IndexError):
-                return None
-        else:
-            return None
-    return obj
+# Built-in command templates for known agent CLIs. Every entry is a plain
+# argv list; "{prompt}" is substituted at invocation time. Override any of
+# these (or add your own) via config.yaml → agent.<backend>.command.
+PRESETS: dict[str, list[str]] = {
+    # Claude Code headless mode
+    "claude_code": [
+        "claude", "-p", "{prompt}",
+        "--allowedTools", "mcp__bybit__*", "Read", "Write", "Edit",
+        "WebFetch", "WebSearch", "Task",
+        "--max-turns", "30",
+        "--output-format", "json",
+    ],
+    # OpenAI Codex CLI non-interactive mode
+    "codex": ["codex", "exec", "--full-auto", "{prompt}"],
+    # Google Gemini CLI headless mode
+    "gemini": ["gemini", "--yolo", "-p", "{prompt}"],
+    # OpenCode non-interactive run
+    "opencode": ["opencode", "run", "{prompt}"],
+    # Aider scripting mode
+    "aider": ["aider", "--yes", "--message", "{prompt}"],
+    # "custom" has no preset — define agent.custom.command in config.yaml
+    # for any other framework (OpenClaw, Hermas, in-house agents, ...).
+}
 
 
 class AgentRunner:
-    """Invoke an AI agent using the configured backend.
+    """Invoke the configured agent CLI with the pipeline prompt.
 
     Usage:
         runner = AgentRunner(cfg)           # cfg = parsed config.yaml dict
         out, rc = runner.run(prompt)        # returns (text, 0) on success
+
+    Raises TimeoutError when the agent exceeds timeout_sec — the caller
+    treats a timeout as "an order may exist, do not retry".
     """
 
     def __init__(self, cfg: dict):
-        self.cfg = cfg
         agent_cfg = cfg.get("agent", {})
         self.backend = agent_cfg.get("backend", "claude_code")
-        self.backend_cfg = agent_cfg.get(self.backend, {})
+        bcfg = agent_cfg.get(self.backend, {}) or {}
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
+        self.command: list[str] | None = bcfg.get("command") or PRESETS.get(self.backend)
+        if not self.command:
+            raise ValueError(
+                f"Agent backend {self.backend!r} has no command template. "
+                f"Built-in presets: {', '.join(PRESETS)}. For anything else, "
+                "set agent.<backend>.command in config.yaml (a list of argv "
+                'parts where "{prompt}" marks where the prompt goes).'
+            )
+        if not any("{prompt}" in part for part in self.command):
+            raise ValueError(
+                f"agent.{self.backend}.command must contain a \"{{prompt}}\" "
+                "placeholder so the daemon can pass the pipeline prompt."
+            )
 
-    def run(self, prompt: str, system_prompt: str | None = None) -> tuple[str, int]:
-        """Dispatch to the configured backend. Returns (output_text, returncode)."""
-        if self.backend == "claude_code":
-            return self._run_claude_code(prompt)
-        if self.backend in ("openai", "openai_compatible"):
-            return self._run_openai(prompt, system_prompt)
-        if self.backend == "http":
-            return self._run_http(prompt, system_prompt)
-        raise ValueError(
-            f"Unknown agent backend: {self.backend!r}. "
-            "Valid values: claude_code, openai, openai_compatible, http"
-        )
+        self.timeout = bcfg.get("timeout_sec",
+                                agent_cfg.get("timeout_sec",
+                                              cfg.get("invoke_timeout_sec", 600)))
 
-    # ------------------------------------------------------------------
-    # Claude Code CLI backend
-    # ------------------------------------------------------------------
-
-    def _run_claude_code(self, prompt: str) -> tuple[str, int]:
-        bcfg = self.backend_cfg
-        exe = bcfg.get("executable", "claude")
-        allowed_tools: list[str] = bcfg.get("allowed_tools", [
-            "mcp__bybit__*", "Read", "Write", "Edit",
-            "WebFetch", "WebSearch", "Task",
-        ])
-        max_turns = bcfg.get("max_turns", self.cfg.get("max_turns", 30))
-        output_format = bcfg.get("output_format", "json")
-        timeout = bcfg.get("timeout_sec",
-                           self.cfg.get("invoke_timeout_sec", 600))
-
-        cmd = [exe, "-p", prompt, "--allowedTools"] + allowed_tools + [
-            "--max-turns", str(max_turns),
-            "--output-format", output_format,
-        ]
-
+    def run(self, prompt: str) -> tuple[str, int]:
+        cmd = [part.replace("{prompt}", prompt) for part in self.command]
         try:
             result = subprocess.run(
-                cmd, cwd=ROOT, capture_output=True, text=True, timeout=timeout
+                cmd, cwd=ROOT, capture_output=True, text=True,
+                timeout=self.timeout,
             )
             return result.stdout or result.stderr, result.returncode
         except subprocess.TimeoutExpired:
             raise TimeoutError(
-                f"Claude Code timed out after {timeout}s"
+                f"Agent CLI ({self.backend}) timed out after {self.timeout}s"
             )
-
-    # ------------------------------------------------------------------
-    # OpenAI / OpenAI-compatible backend
-    # ------------------------------------------------------------------
-
-    def _run_openai(self, prompt: str, system_prompt: str | None) -> tuple[str, int]:
-        bcfg = self.backend_cfg
-        api_key = os.environ.get(bcfg.get("api_key_env", "OPENAI_API_KEY"), "")
-        if not api_key:
+        except FileNotFoundError as e:
             return (
-                f"ERROR: env var '{bcfg.get('api_key_env', 'OPENAI_API_KEY')}' "
-                "not set — cannot call OpenAI backend.",
+                f"ERROR: agent CLI executable not found: {e}. Is "
+                f"'{cmd[0]}' installed and on PATH? (backend: {self.backend})",
                 1,
             )
-
-        base_url = bcfg.get("base_url", "https://api.openai.com/v1").rstrip("/")
-        model = bcfg.get("model", "gpt-4o")
-        max_tokens = bcfg.get("max_tokens", 16000)
-        temperature = bcfg.get("temperature", 0)
-        timeout = bcfg.get("timeout_sec",
-                           self.cfg.get("invoke_timeout_sec", 600))
-
-        # Resolve system prompt: file takes precedence over passed-in text
-        sys_text = self._load_system_prompt(bcfg, system_prompt)
-
-        messages = []
-        if sys_text:
-            messages.append({"role": "system", "content": sys_text})
-        messages.append({"role": "user", "content": prompt})
-
-        payload = json.dumps({
-            "model": model,
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-        }).encode()
-
-        req = urllib.request.Request(
-            f"{base_url}/chat/completions",
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-            },
-            method="POST",
-        )
-        return self._http_call(req, timeout, "choices.0.message.content")
-
-    # ------------------------------------------------------------------
-    # Generic HTTP backend  (Hermas, OpenClaw, custom endpoints)
-    # ------------------------------------------------------------------
-
-    def _run_http(self, prompt: str, system_prompt: str | None) -> tuple[str, int]:
-        bcfg = self.backend_cfg
-        url = _resolve_env(bcfg.get("url", ""))
-        if not url:
-            return "ERROR: agent.http.url is not configured.", 1
-
-        timeout = bcfg.get("timeout_sec",
-                           self.cfg.get("invoke_timeout_sec", 600))
-
-        sys_text = self._load_system_prompt(bcfg, system_prompt)
-
-        body_template = bcfg.get("body_template")
-        if body_template:
-            escaped_prompt = json.dumps(prompt)[1:-1]
-            escaped_system = json.dumps(sys_text or "")[1:-1]
-            body = body_template \
-                .replace("{prompt}", escaped_prompt) \
-                .replace("{system}", escaped_system)
-            body_bytes = body.encode()
-        else:
-            messages = []
-            if sys_text:
-                messages.append({"role": "system", "content": sys_text})
-            messages.append({"role": "user", "content": prompt})
-            body_bytes = json.dumps({
-                "messages": messages,
-                "prompt": prompt,
-            }).encode()
-
-        headers = {"Content-Type": "application/json"}
-        for k, v in bcfg.get("headers", {}).items():
-            headers[k] = _resolve_env(v)
-
-        req = urllib.request.Request(
-            url, data=body_bytes, headers=headers, method="POST"
-        )
-        response_field = bcfg.get("response_field", "output")
-        return self._http_call(req, timeout, response_field)
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    def _load_system_prompt(self, bcfg: dict, fallback: str | None) -> str:
-        """Return text from system_prompt_file (relative to ROOT) or fallback."""
-        sys_file = bcfg.get("system_prompt_file")
-        if sys_file:
-            sys_path = ROOT / sys_file
-            if sys_path.exists():
-                return sys_path.read_text()
-        return fallback or ""
-
-    @staticmethod
-    def _http_call(req, timeout: int, response_field: str) -> tuple[str, int]:
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                body = json.loads(resp.read())
-                text = _dot_get(body, response_field)
-                if text is None:
-                    text = json.dumps(body)
-                return str(text), 0
-        except urllib.error.HTTPError as e:
-            err = e.read().decode(errors="replace")
-            return f"HTTP {e.code}: {err}", 1
-        except Exception as e:
-            return str(e), 1
