@@ -18,6 +18,12 @@ strategies:
     bracket:
       stop_beyond_pct: 0.1     # SL buffer beyond stop_hint
       fixed_rr: 2.5
+    regime_filter:
+      enabled: true
+      ema_period: 50
+      atr_period: 14
+      trend_threshold: 0.3     # dimensionless slope; tune via sensitivity.py
+      allowed_regimes: [ranging]  # mean-reversion only in non-trending markets
 
   breakout:                    # momentum: first close beyond N-candle range
     enabled: false             # <- enable ONLY after it passes BACKTEST.md
@@ -29,6 +35,12 @@ strategies:
     bracket:
       stop_beyond_pct: 0.1
       fixed_rr: 2.0
+    regime_filter:
+      enabled: false           # enable after breakout passes validation
+      ema_period: 50
+      atr_period: 14
+      trend_threshold: 0.3
+      allowed_regimes: [trending_up, trending_down]  # momentum only in trends
 
 # ---- Claude invocation ----
 max_turns: 30
@@ -48,3 +60,9 @@ events:
   blackout_minutes_before: 30
   blackout_minutes_after: 30
   watch: [FOMC, CPI, NFP, PPI, FED_SPEECH]
+
+# ---- Strategy health monitor (Phase 3 + live) ----
+monitor:
+  degradation_threshold_pct: 50   # flag if live exp < 50% of backtest exp
+  drawdown_alert_multiple: 1.5    # flag if live DD > 1.5x backtest max DD
+  min_trades_for_comparison: 50   # don't compare until N live trades exist

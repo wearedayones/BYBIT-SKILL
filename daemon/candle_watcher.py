@@ -23,6 +23,7 @@ from pybit.unified_trading import HTTP, WebSocket
 from dataclasses import asdict
 from sweep_filter import Candle
 from strategies import enabled_strategies
+from strategies.regime import detect_regime
 
 ROOT = Path(__file__).resolve().parent.parent
 CFG = yaml.safe_load((ROOT / "config.yaml").read_text())
@@ -121,6 +122,15 @@ def on_kline(msg):
             log("KILL_SWITCH present — analysis suppressed.")
             return
         for module, params, bracket in enabled_strategies(CFG):
+            # Regime filter: suppress strategy if current market regime doesn't match
+            regime_cfg = CFG["strategies"].get(module.NAME, {}).get("regime_filter")
+            if regime_cfg and regime_cfg.get("enabled"):
+                regime = detect_regime(candles, regime_cfg)
+                allowed = regime_cfg.get("allowed_regimes",
+                                         ["ranging", "trending_up", "trending_down"])
+                if regime not in allowed:
+                    log(f"[{module.NAME}] Regime={regime}, allowed={allowed} — skipped.")
+                    continue
             signal = module.detect(candles, params)
             if signal:
                 invoke_claude(signal, bracket)

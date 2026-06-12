@@ -1,11 +1,12 @@
 """
-backtest.py — replay real candles through the SAME detect_sweep() the live
-daemon uses, simulate bracket trades, report edge metrics.
+backtest.py — replay real candles through the strategy plugin, simulate bracket
+trades, report edge metrics.
 
 Usage:
     python backtest/backtest.py --csv backtest/data/BTCUSDT_15m.csv
     python backtest/backtest.py --csv ... --start 2025-06-01 --end 2026-03-01
     python backtest/backtest.py --csv ... --min-wick 30 --swing 3 --rr 2.0
+    python backtest/backtest.py --csv ... --monte-carlo 2000
 
 Conservative conventions:
   * Entry = market at sweep-candle close, with slippage applied against you.
@@ -14,6 +15,10 @@ Conservative conventions:
 
 Results in R-multiples (1R = initial risk). Expectancy > ~0.05R after fees
 across BOTH train and test windows is the minimum bar to take seriously.
+
+Exit codes:
+  0 = PASS  (expectancy_R > 0, profit_factor >= 1.05, max_drawdown_R < 15, trades >= 80)
+  1 = FAIL
 """
 
 import argparse
@@ -30,6 +35,14 @@ from sweep_filter import Candle  # noqa: E402
 from strategies import REGISTRY  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent
+RESULTS_DIR = ROOT / "results"
+
+PASS_THRESHOLDS = {
+    "expectancy_R":    ("gt",  0.0),
+    "profit_factor":   ("gte", 1.05),
+    "max_drawdown_R":  ("lt",  15.0),
+    "trades":          ("gte", 80),
+}
 
 
 def load_csv(path: str) -> list[Candle]:
@@ -141,6 +154,43 @@ def report(trades, label=""):
     return stats
 
 
+def monte_carlo(trades: list[dict], n: int) -> dict:
+    """Shuffle trade order N times and compute drawdown distribution."""
+    import random
+    rs = [t["r"] for t in trades]
+    exp_samples, dd_samples, ruin_count = [], [], 0
+    for _ in range(n):
+        shuffled = rs[:]
+        random.shuffle(shuffled)
+        exp_samples.append(sum(shuffled) / len(shuffled))
+        peak = dd = cum = 0.0
+        ruined = False
+        for r in shuffled:
+            cum += r
+            peak = max(peak, cum)
+            dd = max(dd, peak - cum)
+            if cum < -20:
+                ruined = True
+        dd_samples.append(dd)
+        if ruined:
+            ruin_count += 1
+    exp_samples.sort()
+    dd_samples.sort()
+
+    def pct(lst, p):
+        return lst[max(0, min(int(len(lst) * p / 100), len(lst) - 1))]
+
+    return {
+        "n": n,
+        "expectancy_median": round(pct(exp_samples, 50), 3),
+        "expectancy_p5":     round(pct(exp_samples,  5), 3),
+        "expectancy_p95":    round(pct(exp_samples, 95), 3),
+        "drawdown_p50":      round(pct(dd_samples, 50), 1),
+        "drawdown_p95":      round(pct(dd_samples, 95), 1),
+        "ruin_pct":          round(100 * ruin_count / n, 1),
+    }
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", required=True)
@@ -153,6 +203,8 @@ def main():
     ap.add_argument("--fees-bps", type=float, default=5.5)
     ap.add_argument("--slip-bps", type=float, default=2.0)
     ap.add_argument("--out", default=None, help="write trades csv + stats json here")
+    ap.add_argument("--monte-carlo", type=int, default=0,
+                    help="shuffle trade order N times and report drawdown distribution")
     args = ap.parse_args()
 
     cfg = yaml.safe_load((ROOT.parent / "config.yaml").read_text())
@@ -178,6 +230,41 @@ def main():
     trades = run(candles, strategy, fcfg, bcfg, args.fees_bps, args.slip_bps)
     stats = report(trades, span)
 
+    # Monte Carlo drawdown analysis
+    mc_stats = {}
+    if args.monte_carlo > 0 and trades:
+        mc_stats = monte_carlo(trades, args.monte_carlo)
+        print(f"\n== Monte Carlo ({args.monte_carlo} shuffles) ==")
+        print(f"  exp median/p5/p95     {mc_stats['expectancy_median']:+.3f} / "
+              f"{mc_stats['expectancy_p5']:+.3f} / {mc_stats['expectancy_p95']:+.3f}R")
+        print(f"  drawdown p50/p95      {mc_stats['drawdown_p50']:.1f} / "
+              f"{mc_stats['drawdown_p95']:.1f}R")
+        print(f"  ruin probability      {mc_stats['ruin_pct']:.1f}%  (pass < 5%)")
+
+    # Pass/fail verdict
+    ops = {"gt": lambda a, b: a > b, "gte": lambda a, b: a >= b, "lt": lambda a, b: a < b}
+    passed = all(ops[op](stats.get(metric, -999 if op == "gt" else 9999), threshold)
+                 for metric, (op, threshold) in PASS_THRESHOLDS.items())
+    if mc_stats and mc_stats["ruin_pct"] >= 5.0:
+        passed = False
+    verdict = "PASS" if passed else "FAIL"
+    print(f"\nVERDICT: {verdict}")
+
+    # Always auto-save structured result
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    record = {
+        "strategy": args.strategy, "params": fcfg, "bracket": bcfg,
+        "window": {"start": args.start, "end": args.end},
+        "metrics": stats, "verdict": verdict, "timestamp": stamp,
+        "fees_bps": args.fees_bps, "slip_bps": args.slip_bps,
+    }
+    if mc_stats:
+        record["monte_carlo"] = mc_stats
+    out_path = RESULTS_DIR / f"{args.strategy}_{stamp}.json"
+    out_path.write_text(json.dumps(record, indent=2))
+    print(f"Result saved: {out_path}")
+
     if args.out:
         out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
         with open(out / "trades.csv", "w", newline="") as f:
@@ -185,6 +272,8 @@ def main():
             w.writeheader(); w.writerows(trades)
         (out / "stats.json").write_text(json.dumps(stats, indent=2))
         print(f"\nwrote {out}/trades.csv and stats.json")
+
+    sys.exit(0 if verdict == "PASS" else 1)
 
 
 if __name__ == "__main__":
