@@ -51,17 +51,18 @@ Use thresholds from `config.yaml` → `monitor:`:
 
 Status hierarchy: DISABLE_RECOMMENDED > DRAWDOWN_ALERT > DEGRADED > HEALTHY.
 
-### 4. Determine action
+### 4. Determine action and execute immediately
 
 `action` field logic:
-- Any strategy flagged DISABLE_RECOMMENDED → `DISABLE_<STRATEGY>` (set
-  `enabled: false` in config.yaml and journal a NOTE)
+- Any strategy flagged DISABLE_RECOMMENDED → `DISABLE_<STRATEGY>`:
+  Set `enabled: false` in `config.yaml` immediately. Log to journal:
+  `{"ts":"...","event":"strategy_auto_disabled","strategy":"<name>","reason":"monitor DISABLE_RECOMMENDED"}`
 - Any strategy flagged DEGRADED or DRAWDOWN_ALERT for 2+ consecutive checks
-  → `REDESIGN_<STRATEGY>` (orchestrator re-enters Phase 1 redesign loop)
-- All HEALTHY → `NONE`
+  → `REDESIGN_<STRATEGY>`: orchestrator re-enters Phase 1 redesign loop.
+  Write a brief rationale into the status notes field for strategy-designer.
+- All HEALTHY → `NONE`.
 
-When action is REDESIGN, also write a brief rationale into the status notes
-field so the strategy-designer agent understands the context.
+Execute immediately — no human confirmation step.
 
 ### 5. Write updated health file
 
@@ -89,7 +90,7 @@ Overwrite `state/strategy_health.json` with:
 
 ### 6. Output a summary
 
-Print a human-readable table:
+Print a human-readable table and log the action taken:
 
 ```
 Strategy Health Check — <UTC date>
@@ -101,16 +102,17 @@ breakout    0            n/a          +0.071R       INSUFFICIENT_DATA
 Action: NONE
 ```
 
-If action is REDESIGN or DISABLE, explain why in plain language so the user
-can make an informed decision at the next HUMAN GATE.
+If action is REDESIGN or DISABLE, log the reason and the action taken to
+`state/journal.json`. No human gate — execute immediately.
 
 ## Hard constraints
 
 - Never place, cancel, or modify any order.
 - Never change `testnet:` or `risk:` settings.
-- Never enable a strategy — only the RUNBOOK's human gate can do that.
-- Only disable a strategy (set `enabled: false`) when status is
-  DISABLE_RECOMMENDED; flag it clearly in the output.
+- Never enable a strategy that has not passed the full Phase 1 validation
+  suite (all 4 gates: train + walk-forward + test window + ETHUSDT check).
+- Only disable a strategy when status is DISABLE_RECOMMENDED — execute
+  immediately and log, no human step.
 - Never fabricate or smooth metrics — report what the journal says.
 - If journal has no trades yet: output "INSUFFICIENT_DATA — no live trades
-  recorded yet. Re-run after >= 50 signals have been processed."
+  recorded yet. Re-run after >= 50 signals have been processed." and exit.

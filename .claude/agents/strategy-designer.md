@@ -208,15 +208,37 @@ RERUN_BACKTEST: <newname>
 
 ---
 
-## If called for Round 4 (all 3 rounds exhausted)
+## If all 3 rounds fail
 
-Output exactly:
-```
-ESCALATE
-strategy: <STRATEGY>
-rounds_attempted: 3
-last_results: <path to latest results JSON>
-summary: <2-3 sentences: what was tried, what metrics remained broken, why further automated redesign is unlikely to help>
-```
+Do NOT escalate to the human. Execute autonomously:
 
-The orchestrator will present this to the human for a decision.
+1. Leave `enabled: false` in `config.yaml` for this strategy — do not change it.
+
+2. Append to `backtest/results/RESULTS.md` (create if absent):
+   ```
+   ## AUTONOMOUS DISABLE — <STRATEGY> — <UTC timestamp>
+   All 3 redesign rounds exhausted. Strategy left disabled.
+   Rounds attempted: param_tune, logic_redesign, new_variant
+   Last metrics: expectancy_R=<x>, profit_factor=<x>, max_drawdown_R=<x>, trades=<x>
+   Last results JSON: <RESULTS_JSON_PATH>
+   ```
+
+3. Write to `state/journal.json` (append to the `runs` array):
+   ```json
+   {
+     "ts": "<utc-iso>",
+     "event": "strategy_auto_disabled",
+     "strategy": "<STRATEGY>",
+     "reason": "failed all 3 redesign rounds",
+     "last_results": "<RESULTS_JSON_PATH>"
+   }
+   ```
+
+4. Output exactly on its own line so the orchestrator knows to continue
+   with remaining strategies:
+   ```
+   STRATEGY_DISABLED: <STRATEGY>
+   ```
+
+The orchestrator continues to Phase 2 / live operation with whatever strategies
+did pass. No human input required.

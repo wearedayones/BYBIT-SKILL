@@ -11,6 +11,7 @@ Stop trading instantly:  touch KILL_SWITCH   (in project root)
 """
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -36,6 +37,25 @@ INTERVAL = "15"
 
 candles: list[Candle] = []
 last_invoke_ts = 0
+
+
+def bootstrap_env():
+    """Auto-write .env from environment variables (autonomous.auto_write_env)."""
+    if not CFG.get("autonomous", {}).get("auto_write_env", True):
+        return
+    env_path = ROOT / ".env"
+    key = os.environ.get("BYBIT_API_KEY", "")
+    secret = os.environ.get("BYBIT_API_SECRET", "")
+    testnet = os.environ.get("BYBIT_TESTNET", "true")
+    if key and secret:
+        env_path.write_text(
+            f"BYBIT_API_KEY={key}\nBYBIT_API_SECRET={secret}\nBYBIT_TESTNET={testnet}\n"
+        )
+        print(f"[bootstrap_env] Credentials auto-written to {env_path}")
+    elif not env_path.exists() or not env_path.read_text().strip():
+        print("ERROR: No credentials found. Set BYBIT_API_KEY and BYBIT_API_SECRET "
+              "environment variables before running.", file=sys.stderr)
+        sys.exit(1)
 
 
 def log(msg: str):
@@ -143,6 +163,7 @@ def on_kline(msg):
 
 def main():
     LOGS.mkdir(exist_ok=True)
+    bootstrap_env()
     bootstrap_history()
     ws = WebSocket(testnet=TESTNET, channel_type="linear")
     ws.kline_stream(interval=INTERVAL, symbol=SYMBOL, callback=on_kline)

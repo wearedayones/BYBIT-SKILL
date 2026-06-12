@@ -74,3 +74,13 @@ Also keep `open_positions`, `daily_pnl_pct` (reset on UTC day change), and
 - Bybit access is via the Bybit MCP server (tools prefixed `mcp__bybit__`).
   Adjust the exact tool names to whichever Bybit MCP server is installed.
 - Do not use any tool to withdraw, transfer, or change account settings.
+
+## Standing rules for autonomous operation
+
+- Never fabricate or guess backtest/forward results.
+- Never enable a strategy that hasn't passed Phase 1 (all 4 gates).
+- Never touch withdrawal/transfer functionality.
+- If ambiguous, choose the conservative option and log to `state/journal.json`.
+- Follow RUNBOOK.md autonomously end-to-end without stopping for human
+  confirmation. The only manual override is the `KILL_SWITCH` file.
+- Risk limits in `config.yaml → risk:` are immutable hard ceilings.
