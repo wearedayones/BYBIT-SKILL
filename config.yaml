@@ -109,69 +109,21 @@ strategies:
       trend_threshold: 0.3
       allowed_regimes: [ranging]
 
-# ---- Agent backend -------------------------------------------------------
-# This repo is a SKILL — the AI agent framework that loads it handles its
-# own authentication. The daemon just calls that framework's headless CLI
-# with the pipeline prompt.  No API keys belong here.
+# ---- Agent command --------------------------------------------------------
+# This repo is a SKILL. The AI agent that runs it uses its own CLI and
+# handles its own auth. No API keys belong here.
 #
-# Set backend to whichever CLI is installed. Built-in presets (no extra
-# config needed):
-#   claude_code  — Claude Code  (claude -p "…")          [default]
-#   codex        — OpenAI Codex CLI  (codex exec …)
-#   gemini       — Google Gemini CLI  (gemini --yolo …)
-#   opencode     — OpenCode  (opencode run …)
-#   aider        — Aider  (aider --yes --message …)
-#   custom       — anything else: define command below
+# Set agent.command to the argv list your agent CLI uses for headless /
+# non-interactive mode.  Use {prompt} exactly once — that is where the
+# pipeline prompt is inserted at runtime.
 #
-# For a CLI not listed above, use backend: custom and fill in command:
-#   agent:
-#     backend: custom
-#     custom:
-#       command: ["myagent", "run", "--prompt", "{prompt}"]
-#       timeout_sec: 600
-#
-# The {prompt} placeholder is required — that is where the pipeline prompt
-# is injected. The rest of argv is passed verbatim to subprocess.
+# The current default (Claude Code) is built into daemon/agent_runner.py.
+# To use a different agent, uncomment and fill in the two lines below.
 # -------------------------------------------------------------------------
 agent:
-  backend: claude_code      # change this to your installed agent CLI
+  timeout_sec: 600            # how long to wait for the agent CLI to respond
 
-  # Override timeout for any backend (seconds). Default: invoke_timeout_sec.
-  timeout_sec: 600
-
-  # ---- Per-backend overrides (optional) ----
-  # Uncomment and edit only what you need to change from the preset.
-
-  # claude_code:
-  #   command:
-  #     - claude
-  #     - "-p"
-  #     - "{prompt}"
-  #     - "--allowedTools"
-  #     - "mcp__bybit__*"
-  #     - Read
-  #     - Write
-  #     - Edit
-  #     - WebFetch
-  #     - WebSearch
-  #     - Task
-  #     - "--max-turns"
-  #     - "30"
-  #     - "--output-format"
-  #     - json
-  #   timeout_sec: 600
-
-  # codex:
-  #   command: ["codex", "exec", "--full-auto", "{prompt}"]
-  #   timeout_sec: 600
-
-  # gemini:
-  #   command: ["gemini", "--yolo", "-p", "{prompt}"]
-  #   timeout_sec: 600
-
-  # custom:
-  #   command: ["myagent", "run", "--prompt", "{prompt}"]
-  #   timeout_sec: 600
+  # command: ["your-agent-cli", "run", "{prompt}"]   # ← set for your agent
 
 # ---- Risk rules (SHARED across ALL strategies — hard ceilings) ----
 # risk_engine.py enforces these and can only size DOWN from them, never up.

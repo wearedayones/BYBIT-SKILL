@@ -1,12 +1,12 @@
 # Multi-Agent, Multi-Strategy Event-Driven Bracket System
 
 Universal multi-agent trading system for Bybit (15m timeframe). This repo is
-a **skill** — it is loaded and run by whatever AI agent CLI you already use.
-No API keys for the AI agent live here; the agent handles its own auth.
+a **skill** — it is loaded and driven by whatever AI agent you already use.
+No AI API keys live here; the agent handles its own authentication.
 
-Supported out of the box: **Claude Code**, **OpenAI Codex CLI**, **Google
-Gemini CLI**, **OpenCode**, **Aider**, or any custom agent CLI. Switch with
-one line in `config.yaml`.
+Works with any agent that has a headless / non-interactive CLI mode. Configure
+it once with a single `command:` list in `config.yaml` and the daemon calls it
+for every trading signal — no agent-type names, no presets, no special cases.
 
 Strategy-pluggable: each strategy = a detector module + an analyst agent +
 a config block. Shipped strategies: **sweep** (mean-reversion, enabled) and
@@ -52,29 +52,20 @@ export BYBIT_TESTNET=true      # keep true until validated
 ```
 Create the Bybit key with **trade permission only** — no withdrawal, no transfer.
 
-### 3. Pick your agent CLI
+### 3. Point the daemon at your agent CLI
 
-Set one line in `config.yaml`:
+Add one `command:` list in `config.yaml`:
 
-| Your CLI | Set `agent.backend` to |
-|---|---|
-| Claude Code (`claude`) | `claude_code` ← default, no change needed |
-| OpenAI Codex CLI (`codex`) | `codex` |
-| Google Gemini CLI (`gemini`) | `gemini` |
-| OpenCode (`opencode`) | `opencode` |
-| Aider (`aider`) | `aider` |
-| Anything else | `custom` — add `command:` list below |
-
-Example for a custom CLI:
 ```yaml
 agent:
-  backend: custom
-  custom:
-    command: ["myagent", "run", "--headless", "{prompt}"]
+  command: ["your-agent-cli", "run-headless-flag", "{prompt}"]
+  timeout_sec: 600
 ```
-`{prompt}` is the only required placeholder — the daemon substitutes the
-pipeline prompt there. The agent CLI must already be authenticated; no
-credentials go in `config.yaml`.
+
+`{prompt}` is replaced with the pipeline prompt at runtime. The rest of the
+argv is passed verbatim. The agent CLI handles its own auth — nothing else
+goes in `config.yaml`. If `command:` is absent the daemon defaults to the
+Claude Code CLI (`claude -p {prompt} --allowedTools mcp__bybit__* …`).
 
 ### 4. Run
 ```bash
@@ -88,11 +79,14 @@ ExecStart=/usr/bin/python3 daemon/candle_watcher.py
 Restart=always
 ```
 
-### 5. Claude Code users: full autonomous setup
-Open this folder in Claude Code and say: **"Follow RUNBOOK.md from Phase 0."**
-The runbook drives the agent through every phase — environment bootstrap,
-backtest validation, dry-run, testnet forward-testing, and go-live — with no
-human confirmation steps.
+### 5. Start
+```bash
+python daemon/candle_watcher.py
+```
+
+**Claude Code users:** open this folder in Claude Code and say
+**"Follow RUNBOOK.md from Phase 0."** The runbook drives the agent through
+every phase — bootstrap, backtest, dry-run, testnet, go-live — autonomously.
 
 ---
 
@@ -182,7 +176,7 @@ Risk limits in `config.yaml` are shared across ALL strategies combined.
 ```
 daemon/
   candle_watcher.py    — WebSocket listener + strategy dispatch
-  agent_runner.py      — CLI abstraction (one-line swap for any agent)
+  agent_runner.py      — universal agent CLI dispatcher (command template)
   risk_engine.py       — deterministic position sizing (Kelly, streak, drawdown)
   tca.py               — transaction-cost analysis (slippage vs backtest)
   notifier.py          — Telegram alerts (config-gated)

@@ -1,74 +1,37 @@
 # Agent Index — Universal Sub-Agent Definitions
 
 This directory contains framework-agnostic definitions for every sub-agent in
-the trading system. This repo is a **skill** — the AI agent framework that
-loads and runs it handles its own authentication. No API keys belong here.
+the trading system. This repo is a **skill** — the AI agent that loads it
+handles its own authentication. No API keys or agent-type names live here.
 
-The daemon's only job is to call your agent's headless CLI with the pipeline
-prompt. Which CLI it calls is set by one line in `config.yaml → agent.backend`.
+The daemon has one job: call your agent's headless CLI with the pipeline
+prompt. You configure that call with a single `command:` list in `config.yaml`.
 
 ---
 
-## Quick-start: pick your CLI
+## Quick-start: any agent CLI
 
-### Claude Code (default, no config change needed)
+**Step 1 — set your agent's command in `config.yaml`:**
+
+```yaml
+agent:
+  command: ["your-agent-cli", "run-headless-flag", "{prompt}"]
+  timeout_sec: 600
+```
+
+`{prompt}` is the only special token — the daemon replaces it with the
+pipeline prompt at runtime. Everything else in the list is passed verbatim
+to subprocess. The agent CLI must already be authenticated; no credentials
+belong in `config.yaml`.
+
+**Step 2 — run:**
+
 ```bash
-pip install -r requirements.txt
 python daemon/candle_watcher.py
 ```
-The daemon runs `claude -p "<prompt>" --allowedTools mcp__bybit__* …` for you.
 
----
-
-### OpenAI Codex CLI
-Install the Codex CLI and authenticate it (`codex login`), then:
-```yaml
-# config.yaml
-agent:
-  backend: codex
-```
-The daemon runs `codex exec --full-auto "<prompt>"`.
-
----
-
-### Google Gemini CLI
-Install and authenticate the Gemini CLI (`gemini auth`), then:
-```yaml
-agent:
-  backend: gemini
-```
-The daemon runs `gemini --yolo -p "<prompt>"`.
-
----
-
-### OpenCode
-```yaml
-agent:
-  backend: opencode
-```
-The daemon runs `opencode run "<prompt>"`.
-
----
-
-### Aider
-```yaml
-agent:
-  backend: aider
-```
-The daemon runs `aider --yes --message "<prompt>"`.
-
----
-
-### Any other CLI (OpenClaw, Hermas, custom agents)
-Use `backend: custom` and supply the full argv list with a `{prompt}` placeholder:
-```yaml
-agent:
-  backend: custom
-  custom:
-    command: ["myagent", "run", "--headless", "{prompt}"]
-    timeout_sec: 600
-```
-The daemon substitutes the pipeline prompt for `{prompt}` and runs the command.
+That is the entire wiring. The default (when `command:` is absent) is the
+Claude Code CLI (`claude -p {prompt} --allowedTools mcp__bybit__* …`).
 
 ---
 
