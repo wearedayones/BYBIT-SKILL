@@ -1,8 +1,9 @@
-# RUNBOOK — Full Lifecycle Playbook (for Claude Code)
+# RUNBOOK — Full Lifecycle Playbook
 
-You (Claude Code) drive this entire process autonomously. Work through the
-phases IN ORDER. All decisions are made by you — no human confirmation steps.
-The only manual override is creating the `KILL_SWITCH` file.
+You (the AI agent, whichever backend is configured in `config.yaml → agent`)
+drive this entire process autonomously. Work through the phases IN ORDER. All
+decisions are made by you — no human confirmation steps. The only manual
+override is creating the `KILL_SWITCH` file.
 
 ---
 
@@ -10,10 +11,14 @@ The only manual override is creating the `KILL_SWITCH` file.
 
 1. `pip install -r requirements.txt` and confirm `python3 --version` >= 3.10.
 
-2. Verify the Bybit MCP is connected: check available tools. If tools are not
-   named `mcp__bybit__*`, update the names in:
-   - `daemon/candle_watcher.py` (`--allowedTools`)
-   - every file in `.claude/agents/` (`tools:` line)
+2. Verify Bybit API connectivity:
+   - **Claude Code**: check that `mcp__bybit__*` tools appear (`claude mcp list`).
+     If tool names differ, update `config.yaml → agent.claude_code.allowed_tools`
+     and the `tools:` lines in `.claude/agents/*.md`.
+   - **Other backends**: confirm the `pybit` library can reach the Bybit REST
+     API. Run `python -c "from pybit.unified_trading import HTTP; print(HTTP(testnet=True).get_server_time())"`.
+     See `agents/INDEX.md` for the MCP-to-REST mapping if you need to adapt
+     any sub-agent instructions.
 
 3. **Auto-bootstrap credentials** (reads `config.yaml → autonomous.auto_write_env`):
    - Read `BYBIT_API_KEY`, `BYBIT_API_SECRET`, `BYBIT_TESTNET` from environment
@@ -234,7 +239,9 @@ strategies and keeps searching. Two things never change:
     All re-validations of strategies that have live fill history MUST use
     `--slip-bps live` (TCA-calibrated slippage from state/tca.json) — never
     the optimistic default.
-18. New strategies → follow the 5-step recipe in README.md, then Phase 1–3.
+18. New strategies → follow the recipe in README.md (create module, register,
+    add both `agents/<name>-analyst.md` and `.claude/agents/<name>-analyst.md`,
+    add config block), then Phase 1–3.
     No human gates in that process either.
 19. Health reviews → `strategy-monitor` runs after every 50 signals. On
     REDESIGN or DISABLE: agent acts immediately and logs. No human step.
@@ -256,6 +263,6 @@ strategies and keeps searching. Two things never change:
 - Risk limits in `config.yaml → risk:` are hard ceilings; never exceed them.
 - **Persist everything**: commit and push after every material change (new
   strategies, results, config, journal). The repo is the only durable memory —
-  uncommitted work is destroyed on reclone. See CLAUDE.md → Persistence protocol.
+  uncommitted work is destroyed on reclone. See ORCHESTRATOR.md → Persistence protocol.
 - **Ground every claim**: metrics come only from artifacts read this session.
-  See CLAUDE.md → Grounding protocol.
+  See ORCHESTRATOR.md → Grounding protocol.
