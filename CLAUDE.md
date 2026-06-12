@@ -75,12 +75,43 @@ Also keep `open_positions`, `daily_pnl_pct` (reset on UTC day change), and
   Adjust the exact tool names to whichever Bybit MCP server is installed.
 - Do not use any tool to withdraw, transfer, or change account settings.
 
+## Grounding protocol (anti-hallucination — applies to every session)
+
+All performance claims must be traceable to an artifact on disk:
+
+- Every metric you state (expectancy, PF, drawdown, trades) must come from a
+  results JSON or stats file you READ in the current session. Cite the path.
+- Pass/fail comes ONLY from script exit codes and the `verdict` field in
+  `backtest/results/*.json`. Never infer a verdict from stdout prose or memory.
+- After every subagent invocation, re-read the artifacts it claims to have
+  produced before acting on its summary. If the artifact is missing or
+  contradicts the summary, trust the artifact and re-run the producing command.
+- Never carry numbers across context windows from memory — re-read the file.
+- If you cannot find an artifact for a claim, the claim does not exist.
+
+## Persistence protocol (the repo is the only durable memory)
+
+Sessions are ephemeral; reclones destroy anything uncommitted. Therefore:
+
+- After EVERY material change — new/edited strategy module, config change,
+  results JSON, RESULTS.md update, journal write, health file update — run:
+  `git add -A && git commit -m "<what changed and why>" && git push`
+- At the START of every session, `git pull` before reading any state.
+- `backtest/results/`, `state/journal.json`, and `state/strategy_health.json`
+  are tracked in git on purpose. Never add them to .gitignore.
+- Raw candle data (`backtest/data/`) and `.env` stay untracked — re-fetch data,
+  re-bootstrap credentials.
+
 ## Standing rules for autonomous operation
 
 - Never fabricate or guess backtest/forward results.
 - Never enable a strategy that hasn't passed Phase 1 (all 4 gates).
+- Never weaken an acceptance threshold or re-tune on the test window — a
+  rigged pass deploys a losing strategy with real money.
 - Never touch withdrawal/transfer functionality.
 - If ambiguous, choose the conservative option and log to `state/journal.json`.
 - Follow RUNBOOK.md autonomously end-to-end without stopping for human
   confirmation. The only manual override is the `KILL_SWITCH` file.
+- When the discovery sweep finds nothing, the answer is MORE SEARCH (new
+  designs, new symbols/timeframes, fresh data) — never a lower bar.
 - Risk limits in `config.yaml → risk:` are immutable hard ceilings.

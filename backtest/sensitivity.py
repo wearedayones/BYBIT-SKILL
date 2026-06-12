@@ -44,6 +44,24 @@ PARAM_SPACES: dict[str, dict[str, list]] = {
         "min_body_atr":    [0.8, 1.0, 1.2, 1.5],
         "atr_period":      [10, 14, 20],
     },
+    "trend_pullback": {
+        "ema_fast":  [13, 21, 34],
+        "ema_slow":  [50, 55, 89],
+    },
+    "rsi_reversion": {
+        "rsi_period":  [9, 14, 21],
+        "oversold":    [20, 25, 30],
+        "overbought":  [70, 75, 80],
+    },
+    "vol_squeeze": {
+        "bb_period":         [14, 20, 26],
+        "squeeze_lookback":  [48, 64, 96],
+        "squeeze_pct":       [15, 25, 35],
+    },
+    "zscore_reversion": {
+        "lookback":  [48, 96, 192],
+        "z_entry":   [1.5, 2.0, 2.5],
+    },
 }
 BRACKET_SPACES: dict[str, list] = {
     "fixed_rr": [1.5, 2.0, 2.5, 3.0],

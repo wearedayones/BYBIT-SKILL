@@ -1,11 +1,10 @@
 # Runtime artifacts
 logs/
-state/journal.json
 KILL_SWITCH
 
-# Backtest artifacts (data is large; results are local)
+# Backtest raw data only (large). Results, journal, and health files are the
+# system's durable memory — they MUST be committed so reclones don't lose work.
 backtest/data/
-backtest/results/
 
 # Secrets — never commit keys
 .env

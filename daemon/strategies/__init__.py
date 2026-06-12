@@ -1,8 +1,10 @@
 """Strategy registry. Add a new strategy = add a module here + a config block."""
 
-from strategies import sweep, breakout
+from strategies import (sweep, breakout, trend_pullback, rsi_reversion,
+                        vol_squeeze, zscore_reversion)
 
-REGISTRY = {m.NAME: m for m in (sweep, breakout)}
+REGISTRY = {m.NAME: m for m in (sweep, breakout, trend_pullback,
+                                rsi_reversion, vol_squeeze, zscore_reversion)}
 
 
 def enabled_strategies(cfg: dict) -> list[tuple]:

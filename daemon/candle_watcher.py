@@ -33,7 +33,7 @@ KILL = ROOT / "KILL_SWITCH"
 
 SYMBOL = CFG["symbol"]
 TESTNET = CFG["testnet"]
-INTERVAL = "15"
+INTERVAL = str(CFG.get("timeframe", "15"))  # set by Phase 1 to the validated timeframe
 
 candles: list[Candle] = []
 last_invoke_ts = 0
