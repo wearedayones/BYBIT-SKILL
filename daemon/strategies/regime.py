@@ -65,3 +65,65 @@ def detect_regime(candles: list[Candle], params: dict) -> str:
     if slope < -trend_threshold:
         return "trending_down"
     return "ranging"
+
+
+# ---------------- volatility-rank regime (low / normal / high) ----------------
+
+def _rolling_vol(closes: list[float], window: int) -> list[float | None]:
+    """Rolling stddev of simple returns; index-aligned to closes.
+    None until enough history. O(n) via running sums."""
+    n = len(closes)
+    out: list[float | None] = [None] * n
+    if n < window + 1:
+        return out
+    rets = [(closes[i] - closes[i - 1]) / closes[i - 1] for i in range(1, n)]
+    s = sum(rets[:window])
+    sq = sum(r * r for r in rets[:window])
+    for i in range(window, len(rets) + 1):
+        if i > window:
+            old, new = rets[i - window - 1], rets[i - 1]
+            s += new - old
+            sq += new * new - old * old
+        m = s / window
+        var = max(sq / window - m * m, 0.0)
+        out[i] = var ** 0.5  # vol at close index i uses returns up to close i
+    return out
+
+
+def vol_regime_series(candles: list[Candle], params: dict | None = None) -> list[str]:
+    """Per-candle volatility regime labels, trailing data only (no look-ahead).
+
+    Current realized vol (stddev of returns over vol_window bars) is
+    percentile-ranked against its own trailing vol_lookback distribution:
+      rank < low_pct  -> 'low' | rank > high_pct -> 'high' | else 'normal'
+    """
+    params = params or {}
+    window = int(params.get("vol_window", 24))
+    lookback = int(params.get("vol_lookback", 480))
+    low_pct = float(params.get("low_pct", 0.30))
+    high_pct = float(params.get("high_pct", 0.70))
+
+    closes = [c.close for c in candles]
+    vols = _rolling_vol(closes, window)
+    labels = []
+    for i in range(len(candles)):
+        v = vols[i]
+        if v is None:
+            labels.append("normal")
+            continue
+        hist = [x for x in vols[max(0, i - lookback):i + 1] if x is not None]
+        if len(hist) < 60:  # need a real distribution before ranking means anything
+            labels.append("normal")
+            continue
+        rank = sum(1 for x in hist if x <= v) / len(hist)
+        labels.append("low" if rank < low_pct else "high" if rank > high_pct else "normal")
+    return labels
+
+
+def vol_regime(candles: list[Candle], params: dict | None = None) -> str:
+    """Current volatility regime: 'low' | 'normal' | 'high'."""
+    params = params or {}
+    lookback = int(params.get("vol_lookback", 480))
+    window = int(params.get("vol_window", 24))
+    tail = candles[-(lookback + window + 2):]
+    return vol_regime_series(tail, params)[-1]

@@ -1,6 +1,7 @@
 # ===== Multi-Strategy Trading System configuration =====
 
 symbol: BTCUSDT
+timeframe: "15"          # kline interval (minutes); Phase 1 sets this to the validated timeframe
 testnet: true            # KEEP true until the system has run clean for weeks
 
 # ---- Strategies ----
@@ -18,6 +19,7 @@ strategies:
     bracket:
       stop_beyond_pct: 0.1     # SL buffer beyond stop_hint
       fixed_rr: 2.5
+    allowed_vol_regimes: [low, normal]  # realized-vol rank filter (regime.py)
     regime_filter:
       enabled: true
       ema_period: 50
@@ -42,18 +44,93 @@ strategies:
       trend_threshold: 0.3
       allowed_regimes: [trending_up, trending_down]  # momentum only in trends
 
+  trend_pullback:              # trend-following: buy the dip in an uptrend
+    enabled: false
+    priority: 3
+    params:
+      ema_fast: 21
+      ema_slow: 55
+    bracket:
+      stop_beyond_pct: 0.1
+      fixed_rr: 2.0
+    regime_filter:
+      enabled: false
+      ema_period: 50
+      atr_period: 14
+      trend_threshold: 0.3
+      allowed_regimes: [trending_up, trending_down]
+
+  rsi_reversion:               # mean-reversion: fade RSI extremes with reversal trigger
+    enabled: false
+    priority: 4
+    params:
+      rsi_period: 14
+      oversold: 30
+      overbought: 70
+    bracket:
+      stop_beyond_pct: 0.1
+      fixed_rr: 2.0
+    allowed_vol_regimes: [low, normal]  # realized-vol rank filter (regime.py)
+    regime_filter:
+      enabled: false
+      ema_period: 50
+      atr_period: 14
+      trend_threshold: 0.3
+      allowed_regimes: [ranging]
+
+  vol_squeeze:                 # volatility compression -> expansion breakout
+    enabled: false
+    priority: 5
+    params:
+      bb_period: 20
+      squeeze_lookback: 64
+      squeeze_pct: 25
+    bracket:
+      stop_beyond_pct: 0.1
+      fixed_rr: 2.0
+    allowed_vol_regimes: [low, normal]  # realized-vol rank filter (regime.py)
+    regime_filter:
+      enabled: false           # squeeze fires at regime transitions; leave open
+
+  zscore_reversion:            # statistical mean-reversion on rolling z-score
+    enabled: false
+    priority: 6
+    params:
+      lookback: 96
+      z_entry: 2.0
+    bracket:
+      stop_beyond_pct: 0.1
+      fixed_rr: 2.0
+    allowed_vol_regimes: [low, normal]  # realized-vol rank filter (regime.py)
+    regime_filter:
+      enabled: false
+      ema_period: 50
+      atr_period: 14
+      trend_threshold: 0.3
+      allowed_regimes: [ranging]
+
 # ---- Claude invocation ----
 max_turns: 30
 invoke_timeout_sec: 600
 invoke_cooldown_sec: 900       # never invoke more than once per candle
 
 # ---- Risk rules (SHARED across ALL strategies — hard ceilings) ----
+# risk_engine.py enforces these and can only size DOWN from them, never up.
 risk:
-  risk_per_trade_pct: 1.0
+  risk_per_trade_pct: 1.0      # ceiling; quarter-Kelly + streak throttle reduce it
   max_open_positions: 1        # total, across all strategies
   max_daily_loss_pct: 3.0      # total, across all strategies
+  max_weekly_loss_pct: 6.0     # rolling 7-day; breach = no new trades for 48h
+  equity_floor_pct: 50         # equity < 50% of starting equity = hard halt + alert
   min_rr: 2.0
   max_leverage: 3
+
+# ---- Alerts (critical events only — alert fatigue is a failure mode) ----
+# Requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID environment variables.
+# System runs fine with enabled: false; would-be alerts land in logs/alerts.log.
+alerts:
+  enabled: false
+  channel: telegram
 
 # ---- Event guard ----
 events:
@@ -74,3 +151,12 @@ autonomous:
   auto_enable_strategies: true # automatically set enabled: true after all 4 gates pass
   auto_disable_degraded: true  # automatically set enabled: false on DISABLE_RECOMMENDED
   auto_write_env: true         # auto-create .env from BYBIT_API_KEY/SECRET env vars
+
+# ---- Strategy discovery (Phase 1 search space) ----
+# The agent searches strategies x symbols x timeframes until something passes
+# the FULL validation suite honestly. The acceptance bar itself never changes.
+discovery:
+  symbols: [BTCUSDT, ETHUSDT, SOLUSDT]
+  timeframes: ["15", "60"]     # Bybit kline intervals (minutes)
+  data_days: 365
+  refresh_days: 7              # re-fetch data and re-validate this often

@@ -22,6 +22,16 @@ Checklist (fetch 1H/4H klines via the Bybit MCP as needed):
 5. **Room to target** — measure distance to the next meaningful HTF level;
    if it's closer than the configured RR allows, REJECT or reduce target.
 
+**Derivatives confirmation (mandatory — fetch via Bybit MCP):**
+
+- **Funding check** (`getFundingRateHistory`): extreme funding (|rate| > 0.05%
+  per 8h) AGAINST your trade direction means you'd join the crowded side —
+  downgrade confidence. Funding WITH the trade is a tailwind.
+- **Open interest check** (`getOpenInterest`): a real breakout/trend leg is
+  built on RISING OI (new money entering). Falling OI during the move means
+  short-covering / position closing — the move has no fuel. REJECT on falling
+  OI unless every other factor is A-grade.
+
 Output exactly this JSON and nothing else:
 
 ```json

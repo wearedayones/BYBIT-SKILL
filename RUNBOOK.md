@@ -29,95 +29,135 @@ The only manual override is creating the `KILL_SWITCH` file.
 5. Self-test: call a read-only MCP tool (`mcp__bybit__getServerTime`). If it
    fails: log the error and halt — do not proceed without a working connection.
 
-## Phase 1 — Institutional validation (fully automated)
+## Phase 1 — Strategy Discovery (fully automated, never gives up)
+
+The goal of Phase 1 is to FIND a configuration that honestly passes the full
+validation suite — not to validate one fixed strategy and quit. The search
+space is `strategy library × discovery.symbols × discovery.timeframes`, and
+the library itself grows: when nothing passes, the agent designs new
+strategies and keeps searching. Two things never change:
+
+- **The acceptance bar is immutable.** Never weaken thresholds, never re-tune
+  on the test window, never count a marginal result as a pass. A rigged pass
+  deploys a losing strategy with real money — worse than no pass.
+- **The agent never trades an unvalidated strategy.** "Keep searching" and
+  "start trading" are different decisions with different bars.
 
 ### Data preparation
-6. Fetch 365 days of candle data for both validation symbols:
+6. Fetch data for every symbol × timeframe in `config.yaml → discovery:`:
    ```bash
-   python backtest/fetch_data.py --symbol BTCUSDT --days 365
-   python backtest/fetch_data.py --symbol ETHUSDT --days 365
+   python backtest/fetch_data.py --symbol <SYM> --days 365 --interval <TF>
    ```
-   Determine date boundaries from the CSV. Suggested split:
+   (e.g. BTCUSDT/ETHUSDT/SOLUSDT × 15/60). Output:
+   `backtest/data/<SYM>_<TF>m.csv`. `fetch_data.py` runs a data integrity
+   check automatically after download — fix FAIL verdicts before proceeding.
+   Determine the split per file:
    - TRAIN_START = first candle date, TRAIN_END ≈ +274 days (~9 months)
    - TEST_START = TRAIN_END, TEST_END = last candle date (~3 months)
 
-### Per-strategy: train baseline → automated redesign loop → full suite
-7. For each strategy in `config.yaml`, run the TRAIN-window baseline:
+### Discovery sweep: library × symbols × timeframes
+7. For every (strategy, symbol, timeframe) combination, run the **optimizer**
+   to sweep ALL parameter combinations and find the best config on the TRAIN
+   window:
    ```bash
-   python backtest/backtest.py --csv backtest/data/BTCUSDT_15m.csv \
-       --strategy <name> --start <TRAIN_START> --end <TRAIN_END>
+   python backtest/optimize.py --csv backtest/data/<SYM>_<TF>m.csv \
+       --strategy <name> --start <TRAIN_START> --end <TRAIN_END> \
+       --top-n 5 --monte-carlo 500 --workers 4
    ```
-   Script exits 0 (PASS) or 1 (FAIL); always writes to
-   `backtest/results/<strategy>_<datestamp>.json`.
+   The optimizer ranks all combinations by Sharpe ratio (primary) then
+   expectancy_R and applies Monte Carlo ruin filtering on the top-5.
+   Record every result in `backtest/results/RESULTS.md`
+   (strategy, symbol, TF, trades, exp_R, Sharpe, PF, DD, verdict).
 
-   **Exit 0 → jump to step 8.**
+   - Optimizer exits 0 (best config PASSES + ruin < 5%) → use the best
+     params from `backtest/results/optimize_<name>_<stamp>.json` and promote
+     straight to step 8.
+   - Optimizer exits 1 (no config passes train thresholds) → enter the
+     redesign loop (max 3 rounds) using the strategy-designer prompt:
+     ```
+     STRATEGY: <name>
+     ROUND: <1|2|3>
+     RESULTS_JSON_PATH: backtest/results/optimize_<name>_<latest_stamp>.json
+     SENSITIVITY_JSON_PATH: <path or "none">
+     TRAIN_START / TRAIN_END / CSV_PATH / CHANGELOG: <...>
+     Follow your Round <N> instructions. Output RERUN_BACKTEST: <name> when done.
+     ```
+     Re-run `optimize.py` after each round; run sensitivity after round 1.
+   - Hopeless combos (all combinations with deeply negative expectancy) →
+     record and skip; do not waste redesign rounds on them.
 
-   **Exit 1 → enter redesign loop (max 3 rounds, no human gate):**
-   Invoke the `strategy-designer` agent for each round:
-   ```
-   STRATEGY: <name>
-   ROUND: <1|2|3>
-   RESULTS_JSON_PATH: backtest/results/<name>_<latest_stamp>.json
-   SENSITIVITY_JSON_PATH: backtest/results/sensitivity_<name>_<stamp>.json (or "none")
-   TRAIN_START: <date>
-   TRAIN_END: <date>
-   CSV_PATH: backtest/data/BTCUSDT_15m.csv
-   CHANGELOG: <list of changes from prior rounds, empty on first>
+8. Each combo that passes train runs the full validation suite ON ITS OWN
+   symbol/timeframe data:
 
-   Follow your Round <N> instructions. Output RERUN_BACKTEST: <name> when done.
-   ```
-   After each round: re-run the backtest (step 7), check exit code. After round 1
-   also run the sensitivity probe to guide round 2:
+   **a. Walk-forward:**
    ```bash
-   python backtest/sensitivity.py --csv backtest/data/BTCUSDT_15m.csv \
-       --strategy <name> --start <TRAIN_START> --end <TRAIN_END>
-   ```
-   If the designer outputs `STRATEGY_DISABLED: <name>` (all 3 rounds failed):
-   skip to step 9, do not run the validation suite for this strategy.
-
-8. Once train PASSES, run the full institutional validation suite:
-
-   **a. Walk-forward** (proves edge persists across time):
-   ```bash
-   python backtest/walk_forward.py --csv backtest/data/BTCUSDT_15m.csv \
+   python backtest/walk_forward.py --csv backtest/data/<SYM>_<TF>m.csv \
        --strategy <name> --train-months 9 --test-months 3 --step-months 1
    ```
    Must pass: >= 60% folds positive, combined exp > 0, combined DD < 20R.
 
-   **b. Test window** (one shot — never re-tune after seeing test):
+   **b. Test window (one shot — never re-tune after seeing test):**
    ```bash
-   python backtest/backtest.py --csv backtest/data/BTCUSDT_15m.csv \
+   python backtest/backtest.py --csv backtest/data/<SYM>_<TF>m.csv \
        --strategy <name> --start <TEST_START> --end <TEST_END> --monte-carlo 2000
    ```
    Must pass: exit 0 AND `ruin_pct < 5%`.
 
-   **c. Multi-symbol check** (same params, no re-tuning):
-   ```bash
-   python backtest/backtest.py --csv backtest/data/ETHUSDT_15m.csv \
-       --strategy <name> --start <TEST_START> --end <TEST_END>
-   ```
-   Must have `expectancy_R > 0` on ETHUSDT.
+   **c. Second-symbol check (same params, no re-tuning):** run the test window
+   on a DIFFERENT symbol from discovery.symbols at the same timeframe.
+   Must have `expectancy_R > 0`.
 
-9. **Autonomous outcomes — no confirmation required:**
-   - Strategy passes ALL four gates (train + walk-forward + test + ETHUSDT):
-     If `autonomous.auto_enable_strategies: true`, set `enabled: true` in
-     `config.yaml`. Log: `"Strategy <name> autonomously enabled after passing
-     all 4 validation gates."` Write baseline metrics to
-     `state/strategy_health.json`.
-   - Strategy failed (disabled after 3 redesign rounds or any suite gate):
-     Leave `enabled: false`. Append to `backtest/results/RESULTS.md`:
+   NOTE on multiple testing: the wider the search, the more likely a lucky
+   pass. That is exactly why all three suite gates are mandatory and why a
+   marginal test-window pass with a walk-forward fail is a FAIL.
+
+8d. **Red-team gate (after all four gates pass, before enabling):**
+   Invoke the `red-team` agent with the paths to every results JSON for the
+   combo (train, walk-forward, test, second-symbol, sensitivity, optimize).
+   It tries to kill the pass: regime homogeneity, margin-of-pass, optimizer
+   selection bias, artifact inconsistency, fee realism.
+   - `CONFIRM` → proceed to step 9.
+   - `CHALLENGE: <reason>` → run the tiebreaker, ONE regime-split backtest
+     on the full data span:
+     ```bash
+     python backtest/backtest.py --csv backtest/data/<SYM>_<TF>m.csv \
+         --strategy <name> --regime-split
      ```
-     ## AUTONOMOUS DISABLE — <name> — <UTC>
-     Reason: <failed train after 3 rounds | failed walk-forward | failed test | failed ETHUSDT>
-     Last metrics: expectancy_R=<x>, profit_factor=<x>, max_drawdown_R=<x>
-     ```
-     Log to `state/journal.json`:
-     `{"ts":"...","event":"strategy_auto_disabled","strategy":"<name>","reason":"..."}`
-   - NO strategies passed → log to journal:
-     `{"ts":"...","event":"system_halted","reason":"no strategies passed validation"}`
-     Halt — do not proceed to Phase 2. Write `backtest/results/RESULTS.md` with
-     the full failure summary and stop.
-   - At least one strategy enabled → continue to Phase 2 automatically.
+     `regime_split.verdict: PASS` (profitable in ≥ 2 active regimes — or its
+     only active regime if regime-filtered — and no active regime below
+     −0.1R) overrides the challenge → proceed to step 9. FAIL → the combo
+     is rejected; record both the challenge and the regime table in
+     RESULTS.md and return it to discovery.
+
+9. **Autonomous outcomes — no confirmation step:**
+   - A combo passes ALL four gates AND the red-team gate → if
+     `autonomous.auto_enable_strategies: true`: set `symbol:` and `timeframe:`
+     in config.yaml to the validated combo, set the strategy `enabled: true`
+     **with `shadow: true`** (paper-trade first — see Phase 3a), write
+     baseline metrics to `state/strategy_health.json`, log the decision, and
+     continue to Phase 2.
+     (If multiple combos pass, prefer: highest walk-forward pct_folds_positive,
+     then highest test expectancy.)
+   - A strategy family exhausts 3 redesign rounds → designer outputs
+     `STRATEGY_DISABLED: <name>`; record it and move on to the next candidate.
+   - **The ENTIRE search space is exhausted with no pass → DO NOT STOP.**
+     Enter the expansion loop:
+       1. Invoke strategy-designer in Round-3 mode to create 1-2 genuinely NEW
+          strategy designs (different signal families from what failed — e.g.
+          if all reversion failed, design carry/momentum/session-based ideas).
+          Designer must register them (module + REGISTRY + config block +
+          analyst file + PARAM_SPACES entry).
+       2. Re-run steps 7-8 for the new designs only.
+       3. Log each completed sweep to `state/journal.json`:
+          `{"ts":"...","event":"discovery_sweep_complete","combos_tested":N,
+            "passes":0,"new_strategies_added":[...]}`
+       4. After every `discovery.refresh_days` days, re-fetch fresh data and
+          re-run the full sweep — markets change; an edge can appear in new
+          data that wasn't in the old window.
+     The agent keeps discovering indefinitely. It reports progress honestly
+     ("47 combos tested, 0 passed, 2 new designs queued") but it NEVER
+     enables an unvalidated strategy just to have something running, and it
+     NEVER weakens a gate to manufacture a pass.
 
 ## Phase 2 — Dry-run (automated pipeline test)
 
@@ -137,16 +177,31 @@ The only manual override is creating the `KILL_SWITCH` file.
     Log: `"Daemon started at <utc>. Symbol=<SYMBOL> testnet=<bool>."`
     Run under `tmux` or `systemd` for 24/7 uptime — no human confirmation needed.
 
+13a. **Shadow promotion (paper-trade gate before real orders):**
+    Every newly validated strategy starts with `shadow: true` — the full
+    pipeline runs and journals simulated brackets, but no exchange order is
+    placed. The monitor auto-promotes (`shadow: false`) when:
+    - ≥ 50 shadow trades are journaled, AND
+    - shadow rolling expectancy ≥ 50% of the backtest expectancy.
+    If after 50 shadow trades expectancy is below that bar, treat it as a
+    REDESIGN (the backtest doesn't survive contact with live data).
+    Redesigned strategies returning from the Phase 1 loop ALSO re-enter
+    through shadow mode — nothing goes from redesign straight to real orders.
+
 14. Autonomous health monitoring:
     After every 50 signals (tracked via `state/journal.json → runs` count),
     invoke `strategy-monitor`. It reads `journal.json`, compares live metrics
-    to backtest baselines in `strategy_health.json`, and writes its action:
+    to backtest baselines in `strategy_health.json` (including live IC and
+    TCA slippage), and writes its action:
     - `NONE` → continue.
     - `REDESIGN_<strategy>` → immediately re-enter Phase 1 redesign loop for
       that strategy (strategy-designer → backtest → full suite). If it passes,
-      re-enable it automatically. If it fails, auto-disable and log.
+      re-enable it automatically **via shadow mode** (step 13a). If it fails,
+      auto-disable and log.
     - `DISABLE_<strategy>` → set `enabled: false` in config.yaml immediately,
       log to journal, restart daemon.
+    After every monitor run with 2+ strategies enabled, invoke
+    `portfolio-manager` to refresh `state/risk_budget.json`.
 
 15. Phase 3 exit criteria (checked automatically by the monitor):
     - >= 50 signals processed
@@ -176,6 +231,9 @@ The only manual override is creating the `KILL_SWITCH` file.
 17. Any parameter or strategy change → automatically re-enter Phase 1 (full
     institutional suite) before it trades. Strategy-designer proposes; the
     backtest suite validates; config.yaml is updated automatically.
+    All re-validations of strategies that have live fill history MUST use
+    `--slip-bps live` (TCA-calibrated slippage from state/tca.json) — never
+    the optimistic default.
 18. New strategies → follow the 5-step recipe in README.md, then Phase 1–3.
     No human gates in that process either.
 19. Health reviews → `strategy-monitor` runs after every 50 signals. On
@@ -190,8 +248,14 @@ The only manual override is creating the `KILL_SWITCH` file.
 
 - Never fabricate or guess backtest/forward results — report what numbers say.
 - Never enable a strategy that hasn't passed all 4 Phase 1 gates.
+- Never weaken an acceptance threshold or re-tune on the test window.
 - Never touch withdrawal, transfer, or account-settings functionality.
 - If ambiguous, choose the conservative option and log the decision to
   `state/journal.json` with a reasoning summary.
 - KILL_SWITCH file is the only manual override — honour it immediately.
 - Risk limits in `config.yaml → risk:` are hard ceilings; never exceed them.
+- **Persist everything**: commit and push after every material change (new
+  strategies, results, config, journal). The repo is the only durable memory —
+  uncommitted work is destroyed on reclone. See CLAUDE.md → Persistence protocol.
+- **Ground every claim**: metrics come only from artifacts read this session.
+  See CLAUDE.md → Grounding protocol.

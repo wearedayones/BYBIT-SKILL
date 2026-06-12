@@ -42,19 +42,14 @@ Do NOT edit any .py files in round 1. Tune `config.yaml` params only.
   (raise min_wick_pct, raise min_body_atr, raise swing_strength)
 - `max_drawdown_R >= 15` → RR too low, raise `fixed_rr` to 2.5 or 3.0
 
-**Search space (max 3 knobs):**
-
-Sweep strategy:
-- `min_wick_pct`              ∈ {20, 25, 30, 35, 40, 45}
-- `swing_strength`             ∈ {2, 3}
-- `equal_level_tolerance_pct`  ∈ {0.03, 0.05, 0.08}
-- `bracket.fixed_rr`           ∈ {1.5, 2.0, 2.5, 3.0}
-
-Breakout strategy:
-- `range_lookback`  ∈ {24, 36, 48, 72}
-- `min_body_atr`    ∈ {0.8, 1.0, 1.2, 1.5}
-- `atr_period`      ∈ {10, 14, 20}
+**Search space (max 3 knobs).** Use the per-strategy spaces defined in
+`backtest/sensitivity.py → PARAM_SPACES` (the single source of truth for all
+strategies, including new ones you create). Additionally for every strategy:
 - `bracket.fixed_rr` ∈ {1.5, 2.0, 2.5, 3.0}
+
+When you create a NEW strategy (Round 3), also add its search space entry to
+`PARAM_SPACES` in `backtest/sensitivity.py` so sensitivity and future tuning
+rounds cover it.
 
 **If sensitivity JSON is available:** prefer params whose neighbours are also
 positive (STABLE flat region) over the absolute-highest expectancy point that

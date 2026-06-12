@@ -24,6 +24,8 @@ Exit codes:
 import argparse
 import csv
 import json
+import math
+import statistics as _stats
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,10 +60,18 @@ def ts_of(date_str: str) -> int:
     return int(datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc).timestamp() * 1000)
 
 
-def run(candles, strategy, fcfg, bcfg, fees_bps=5.5, slip_bps=2.0, max_hold=96, warmup=200):
+def run(candles, strategy, fcfg, bcfg, fees_bps=5.5, slip_bps=2.0, max_hold=96, warmup=200,
+        allowed_vol_regimes=None):
     trades = []
     open_trade = None
     recent_levels = []  # (price, ts) of levels already traded, 1-day dedupe
+
+    # Volatility-regime filter: precompute trailing-only labels so live and
+    # backtested behavior match (see daemon/strategies/regime.py).
+    vol_labels = None
+    if allowed_vol_regimes:
+        from strategies.regime import vol_regime_series
+        vol_labels = vol_regime_series(candles)
 
     for i in range(warmup, len(candles)):
         c = candles[i]
@@ -88,6 +98,8 @@ def run(candles, strategy, fcfg, bcfg, fees_bps=5.5, slip_bps=2.0, max_hold=96, 
             continue  # one position at a time, no same-candle re-entry
 
         # --- look for a new signal ---
+        if vol_labels and vol_labels[i] not in allowed_vol_regimes:
+            continue
         cand = strategy.detect(candles[: i + 1], fcfg)
         if not cand:
             continue
@@ -120,7 +132,7 @@ def run(candles, strategy, fcfg, bcfg, fees_bps=5.5, slip_bps=2.0, max_hold=96, 
     return trades
 
 
-def report(trades, label=""):
+def report(trades, label="", days_covered: float = None):
     if not trades:
         print(f"{label}: no trades.")
         return {}
@@ -134,6 +146,14 @@ def report(trades, label=""):
         cum += r
         peak = max(peak, cum)
         dd = max(dd, peak - cum)
+    # Sharpe: trade-level, annualised. rf = 0 (crypto).
+    std_R = _stats.stdev(rs) if len(rs) > 1 else 0.0
+    if std_R > 0 and days_covered and days_covered > 0:
+        annual_trades = len(rs) / (days_covered / 365)
+        sharpe = round(sum(rs) / len(rs) / std_R * math.sqrt(annual_trades), 2)
+    else:
+        sharpe = 0.0
+    tpm = round(len(rs) / max((days_covered or 0) / 30.44, 1), 1)
     stats = {
         "trades": len(rs),
         "win_rate_pct": round(100 * len(wins) / len(rs), 1),
@@ -141,10 +161,12 @@ def report(trades, label=""):
         "total_R": round(sum(rs), 1),
         "profit_factor": round(gross_w / gross_l, 2) if gross_l else float("inf"),
         "max_drawdown_R": round(dd, 1),
+        "sharpe_ratio": sharpe,
+        "trades_per_month": tpm,
     }
     print(f"\n== {label} ==")
     for k, v in stats.items():
-        print(f"  {k:16} {v}")
+        print(f"  {k:20} {v}")
     by_kind = {}
     for t in trades:
         by_kind.setdefault(t["kind"], []).append(t["r"])
@@ -201,11 +223,29 @@ def main():
     ap.add_argument("--param", action="append",
                     help="generic strategy param override, e.g. --param range_lookback=64")
     ap.add_argument("--fees-bps", type=float, default=5.5)
-    ap.add_argument("--slip-bps", type=float, default=2.0)
+    ap.add_argument("--slip-bps", default="2.0",
+                    help="slippage in bps, or 'live' to use the TCA-calibrated "
+                         "value from state/tca.json")
     ap.add_argument("--out", default=None, help="write trades csv + stats json here")
     ap.add_argument("--monte-carlo", type=int, default=0,
                     help="shuffle trade order N times and report drawdown distribution")
+    ap.add_argument("--regime-split", action="store_true",
+                    help="attribute each trade to its entry regime (trending_up/"
+                         "down/ranging) and report per-regime metrics")
     args = ap.parse_args()
+
+    # Resolve slippage: 'live' reads the TCA-calibrated value (never below
+    # the default — see daemon/tca.py).
+    if str(args.slip_bps).lower() == "live":
+        tca_path = ROOT.parent / "state" / "tca.json"
+        if tca_path.exists():
+            args.slip_bps = float(json.loads(tca_path.read_text())["calibrated_slip_bps"])
+            print(f"Using TCA-calibrated live slippage: {args.slip_bps} bps")
+        else:
+            args.slip_bps = 2.0
+            print("No state/tca.json yet — falling back to default 2.0 bps")
+    else:
+        args.slip_bps = float(args.slip_bps)
 
     cfg = yaml.safe_load((ROOT.parent / "config.yaml").read_text())
     scfg = cfg["strategies"][args.strategy]
@@ -224,11 +264,14 @@ def main():
     if args.end: candles = [c for c in candles if c.ts < ts_of(args.end)]
     span = (f"{datetime.fromtimestamp(candles[0].ts/1000, timezone.utc):%Y-%m-%d} -> "
             f"{datetime.fromtimestamp(candles[-1].ts/1000, timezone.utc):%Y-%m-%d}")
+    days_covered = (candles[-1].ts - candles[0].ts) / 86_400_000 if len(candles) > 1 else 0
     print(f"{len(candles)} candles | {span} | strategy={args.strategy} | params={fcfg} "
           f"| rr={bcfg.get('fixed_rr')} fees={args.fees_bps}bps")
 
-    trades = run(candles, strategy, fcfg, bcfg, args.fees_bps, args.slip_bps)
-    stats = report(trades, span)
+    allowed_vol = scfg.get("allowed_vol_regimes")
+    trades = run(candles, strategy, fcfg, bcfg, args.fees_bps, args.slip_bps,
+                 allowed_vol_regimes=allowed_vol)
+    stats = report(trades, span, days_covered=days_covered)
 
     # Monte Carlo drawdown analysis
     mc_stats = {}
@@ -241,11 +284,51 @@ def main():
               f"{mc_stats['drawdown_p95']:.1f}R")
         print(f"  ruin probability      {mc_stats['ruin_pct']:.1f}%  (pass < 5%)")
 
+    # Regime-split: attribute each trade to its ENTRY regime. Kills the #1
+    # live-failure mode — a strategy that only works in one market condition.
+    regime_split = {}
+    if args.regime_split and trades:
+        from strategies.regime import detect_regime
+        idx_of = {c.ts: i for i, c in enumerate(candles)}
+        by_regime: dict[str, list[float]] = {}
+        for t in trades:
+            i = idx_of.get(t["ts"])
+            reg = detect_regime(candles[: i + 1], {}) if i is not None else "unknown"
+            by_regime.setdefault(reg, []).append(t["r"])
+
+        print(f"\n== Regime split ==")
+        print(f"{'Regime':14} {'Trades':>7} {'Exp R':>8} {'Total R':>9}")
+        active = {}
+        for reg in ("trending_up", "trending_down", "ranging"):
+            rs = by_regime.get(reg, [])
+            exp = round(sum(rs) / len(rs), 3) if rs else None
+            print(f"  {reg:12} {len(rs):>7}  "
+                  + (f"{exp:>+7.3f}R {sum(rs):>+8.1f}R" if rs else "      —         —"))
+            regime_split[reg] = {"trades": len(rs), "expectancy_R": exp}
+            if len(rs) >= 10:  # enough trades to judge this regime
+                active[reg] = exp
+        # Pass: profitable in >= min(2, n_active) active regimes, no active
+        # regime catastrophic (exp <= -0.1). Regime-filtered strategies that
+        # trade only one regime must be profitable in it.
+        if active:
+            profitable = sum(1 for e in active.values() if e > 0)
+            worst = min(active.values())
+            regime_pass = (profitable >= min(2, len(active)) and worst > -0.1)
+        else:
+            regime_pass = False  # no regime has enough trades to judge
+        regime_split["active_regimes"] = len(active)
+        regime_split["verdict"] = "PASS" if regime_pass else "FAIL"
+        print(f"  regime verdict: {regime_split['verdict']} "
+              f"(profitable in {sum(1 for e in active.values() if e > 0)}/{len(active)} "
+              f"active regimes; pass needs >= {min(2, len(active) or 1)} and worst > -0.1R)")
+
     # Pass/fail verdict
     ops = {"gt": lambda a, b: a > b, "gte": lambda a, b: a >= b, "lt": lambda a, b: a < b}
     passed = all(ops[op](stats.get(metric, -999 if op == "gt" else 9999), threshold)
                  for metric, (op, threshold) in PASS_THRESHOLDS.items())
     if mc_stats and mc_stats["ruin_pct"] >= 5.0:
+        passed = False
+    if args.regime_split and regime_split.get("verdict") == "FAIL":
         passed = False
     verdict = "PASS" if passed else "FAIL"
     print(f"\nVERDICT: {verdict}")
@@ -261,6 +344,8 @@ def main():
     }
     if mc_stats:
         record["monte_carlo"] = mc_stats
+    if regime_split:
+        record["regime_split"] = regime_split
     out_path = RESULTS_DIR / f"{args.strategy}_{stamp}.json"
     out_path.write_text(json.dumps(record, indent=2))
     print(f"Result saved: {out_path}")
