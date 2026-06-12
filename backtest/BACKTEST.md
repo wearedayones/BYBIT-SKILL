@@ -1,8 +1,9 @@
-# Backtest & Tuning Protocol (for Claude Code)
+# Backtest & Tuning Protocol
 
 This is the procedure for validating and adjusting the pre-filter BEFORE the
-system trades. Follow it exactly — the failure mode here is curve-fitting,
-which produces beautiful backtests and dead accounts.
+system trades. An AI agent (any supported backend — see `config.yaml → agent`)
+follows this automatically from RUNBOOK.md. Follow it exactly — the failure
+mode here is curve-fitting, which produces beautiful backtests and dead accounts.
 
 ## What this backtest can and cannot prove
 
