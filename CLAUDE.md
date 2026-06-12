@@ -19,28 +19,50 @@ Additional agents available during setup/review (NOT in the candle-close pipelin
   `daemon/strategies/__init__.py`, `config.yaml` params, and create new strategy
   files. Never touches `risk:` config or enables strategies.
 
-- **strategy-monitor** — checks live forward-test health vs backtest baselines.
+- **strategy-monitor** — checks live forward-test health vs backtest baselines,
+  including live IC (signal quality) and TCA (execution quality).
   Invoked during Phase 3 reviews. Reads `state/journal.json`, updates
   `state/strategy_health.json`, and returns `action: NONE|REDESIGN_*|DISABLE_*`.
   If REDESIGN, re-enter Phase 1 for that strategy before re-enabling it.
   Tools: Read, Write.
+
+- **red-team** — adversarial validation gate. Invoked AFTER a combo passes all
+  four Phase 1 gates and BEFORE enabling it. Tries to kill the pass (regime
+  homogeneity, margin-of-pass, selection bias, artifact inconsistency).
+  Returns CONFIRM or CHALLENGE; a CHALLENGE triggers one regime-split backtest
+  (`backtest.py --regime-split`) as the tiebreaker. Tools: Read, Bash, Glob, Grep.
+
+- **portfolio-manager** — when 2+ strategies are enabled, reallocates the
+  shared risk budget by rolling performance (weights in [0.25, 1.0] — only
+  redistributes DOWN from the ceiling). Runs after every monitor invocation;
+  writes `state/risk_budget.json`. Tools: Read, Write.
 
 ## Pipeline for candle-close events (STRICTLY SERIAL — one subagent at a time, never in parallel)
 
 1. **Read state** — `state/journal.json` and `config.yaml`. If `KILL_SWITCH`
    exists in the project root, log "halted" to the journal and exit immediately.
 
-2. **<strategy>-analyst** — dispatch the analyst matching the payload's
+2. **execution-auditor** — only if the journal shows TRADE runs with missing
+   `fill_price`/`realized_r` (unaudited fills or trades closed since the last
+   run). It backfills fills via the MCP, records `realized_r`, refreshes
+   `state/tca.json`. Skip when there is nothing to audit. This runs FIRST so
+   the risk engine sizes from up-to-date trade history.
+
+3. **<strategy>-analyst** — dispatch the analyst matching the payload's
    `strategy` field (sweep-analyst, breakout-analyst, ...). It returns
    APPROVE/REJECT with a proposed entry, invalidation (stop) price, and target.
 
-3. **event-guard** — only if step 2 approved. It returns CLEAR or BLACKOUT.
+4. **event-guard** — only if step 3 approved. It returns CLEAR or BLACKOUT.
 
-4. **risk-manager** — only if step 3 cleared. It checks live account state via
-   the Bybit MCP and returns an exact position size, or VETO.
+5. **risk-manager** — only if step 4 cleared. It runs `daemon/risk_engine.py`
+   (equity floor, weekly DD, daily stop, correlation, Kelly, streak throttle),
+   applies the strategy's weight from `state/risk_budget.json` if present,
+   checks live account state via the Bybit MCP, and returns an exact position
+   size, or VETO.
 
-5. **executor** — only if step 4 sized the trade. It places ONE bracket order
-   (entry + takeProfit + stopLoss attached atomically) and verifies it exists.
+6. **executor** — only if step 5 sized the trade. It places ONE bracket order
+   (entry + takeProfit + stopLoss attached atomically), verifies it exists,
+   and records `intended_entry`/`fill_price`/`slippage_bps` for the TCA loop.
 
 ## Hard rules (no agent may override these)
 
