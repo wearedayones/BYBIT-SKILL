@@ -19,13 +19,14 @@ previous runs — `state/journal.json` is your memory. Read it first, write it l
 
 ## Loading agent definitions
 
-Sub-agent instructions live in `agents/<name>.md` (universal, framework-neutral).
+Sub-agent instructions live in `agents/<name>.md` — the SINGLE source of truth.
 Each file describes the agent's role, required capabilities, and exact I/O contract.
 Invoke each sub-agent by providing its file content as the system prompt (or as an
 agent definition if your framework supports named sub-agents).
 
-If you are Claude Code, `.claude/agents/<name>.md` is also available and contains
-identical content with YAML front-matter for native Claude Code dispatch.
+If you are Claude Code: `.claude/agents/<name>.md` files exist only as dispatch
+shims (YAML front-matter for native sub-agent registration + a pointer). Each
+dispatched sub-agent reads its full instructions from `agents/<name>.md`.
 
 ## If this is a SETUP or REVIEW session (not a candle-close event)
 

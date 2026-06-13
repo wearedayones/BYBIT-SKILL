@@ -129,15 +129,19 @@ and holds absolute veto power. All limits are shared across all strategies.
 
 ## Agent definitions
 
-Sub-agent instructions live in two parallel locations:
+All sub-agent instructions live in ONE place — `agents/*.md`. Any agent CLI
+reads these as system prompts.
 
-| Directory | Used by |
-|---|---|
-| `agents/*.md` | Universal — any agent CLI can read these as a system prompt |
-| `.claude/agents/*.md` | Claude Code — same content with YAML front-matter for native sub-agent dispatch |
+The `.claude/` files exist only because Claude Code requires those exact
+paths, and they contain no duplicated content:
 
-The canonical orchestrator prompt is `ORCHESTRATOR.md`.
-`CLAUDE.md` is a thin shim that Claude Code auto-reads and points back to it.
+| File | Why it exists | Content |
+|---|---|---|
+| `CLAUDE.md` | Claude Code auto-loads this filename | One pointer: "read ORCHESTRATOR.md" |
+| `.claude/agents/*.md` | Claude Code registers sub-agents from this directory | Front-matter + one pointer: "read agents/<name>.md" |
+
+The canonical orchestrator prompt is `ORCHESTRATOR.md` — single source of
+truth for every framework, Claude Code included.
 
 See `agents/INDEX.md` for per-CLI setup notes and a MCP-to-REST API mapping
 table (for CLIs without MCP support, the sub-agents call Bybit via `pybit`).
@@ -162,8 +166,9 @@ trading doesn't. Never run capital you can't afford to lose.
 
 1. Create `daemon/strategies/<name>.py` with `NAME` and `detect(candles, params) -> Signal | None`.
 2. Register it in `daemon/strategies/__init__.py`.
-3. Create `agents/<name>-analyst.md` (universal) **and**
-   `.claude/agents/<name>-analyst.md` (Claude Code — add YAML front-matter).
+3. Create `agents/<name>-analyst.md` (the full instructions) and a thin shim
+   at `.claude/agents/<name>-analyst.md` (front-matter + pointer — copy the
+   pattern from any existing file there).
 4. Add a `strategies.<name>` block in `config.yaml` with `enabled: false`.
 5. Run the full `backtest/BACKTEST.md` protocol; enable only on a PASS.
 
@@ -188,8 +193,8 @@ backtest/
   walk_forward.py      — rolling walk-forward validation
   data_integrity.py    — gap/duplicate/OHLC sanity checks
   fetch_data.py        — candle download + integrity check
-agents/                — universal sub-agent definitions (any agent CLI)
-.claude/agents/        — Claude Code sub-agent definitions (same + front-matter)
+agents/                — sub-agent definitions (single source of truth)
+.claude/agents/        — Claude Code dispatch shims (front-matter + pointer)
 state/                 — journal.json, strategy_health.json, tca.json, risk_budget.json
 tests/                 — pytest unit tests (strategy math, risk engine)
 scripts/

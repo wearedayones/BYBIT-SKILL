@@ -175,10 +175,15 @@ and 2 both failed). Create a fresh strategy module with a different approach.
    ```
    Never touch the `risk:` section.
 
-5. Create `agents/<newname>-analyst.md` AND `.claude/agents/<newname>-analyst.md`
-   by adapting the nearest existing analyst to match the new detection logic.
-   Both files should have the same content; the `.claude/` version needs
-   YAML front-matter for Claude Code native dispatch.
+5. Create the analyst definition in TWO files:
+   - `agents/<newname>-analyst.md` — the FULL instructions (adapt the nearest
+     existing analyst to match the new detection logic). This is the single
+     source of truth.
+   - `.claude/agents/<newname>-analyst.md` — a thin dispatch shim: YAML
+     front-matter (name, description, tools) + a body that says only
+     "Your complete instructions are in `agents/<newname>-analyst.md` —
+     read that file first and follow it exactly." Copy the pattern from any
+     existing `.claude/agents/*.md` file.
 
 Append to `backtest/results/RESULTS.md`:
 ```
