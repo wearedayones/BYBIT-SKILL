@@ -109,69 +109,21 @@ strategies:
       trend_threshold: 0.3
       allowed_regimes: [ranging]
 
-# ---- Agent backend -------------------------------------------------------
-# Select which AI agent framework runs the trading pipeline.
-# Swap `backend` to switch frameworks; credentials are read from env vars.
+# ---- Agent command --------------------------------------------------------
+# This repo is a SKILL. The AI agent that runs it uses its own CLI and
+# handles its own auth. No API keys belong here.
 #
-# Backends:
-#   claude_code        — Claude Code CLI (default; requires `claude` on PATH)
-#   openai             — OpenAI API  (set OPENAI_API_KEY)
-#   openai_compatible  — any OpenAI-compatible endpoint (Ollama, LM Studio,
-#                        Hermes, OpenClaw — set api_key_env + base_url)
-#   http               — fully generic HTTP POST (Hermas, custom agents)
+# Set agent.command to the argv list your agent CLI uses for headless /
+# non-interactive mode.  Use {prompt} exactly once — that is where the
+# pipeline prompt is inserted at runtime.
+#
+# The current default (Claude Code) is built into daemon/agent_runner.py.
+# To use a different agent, uncomment and fill in the two lines below.
 # -------------------------------------------------------------------------
 agent:
-  backend: claude_code          # change this to switch frameworks
+  timeout_sec: 600            # how long to wait for the agent CLI to respond
 
-  # ---- Claude Code CLI ----
-  claude_code:
-    executable: claude          # path to claude binary (or just "claude" if on PATH)
-    allowed_tools:
-      - "mcp__bybit__*"
-      - Read
-      - Write
-      - Edit
-      - WebFetch
-      - WebSearch
-      - Task
-    max_turns: 30
-    output_format: json
-    timeout_sec: 600
-    # system_prompt_file: ORCHESTRATOR.md   # optional: explicit system prompt file
-
-  # ---- OpenAI / Codex / o-series ----
-  openai:
-    api_key_env: OPENAI_API_KEY           # env var that holds the key
-    base_url: https://api.openai.com/v1   # change for proxies / Azure
-    model: gpt-4o
-    max_tokens: 16000
-    temperature: 0
-    timeout_sec: 600
-    system_prompt_file: ORCHESTRATOR.md   # universal system prompt
-
-  # ---- OpenAI-compatible  (Ollama, LM Studio, Hermes, OpenClaw …) ----
-  openai_compatible:
-    api_key_env: AGENT_API_KEY            # env var (use "none" if no auth)
-    base_url: http://localhost:11434/v1   # example: Ollama default port
-    model: llama3                         # replace with your model name
-    max_tokens: 16000
-    temperature: 0
-    timeout_sec: 600
-    system_prompt_file: ORCHESTRATOR.md
-
-  # ---- Generic HTTP POST  (Hermas, custom agent servers) ----
-  http:
-    url: http://localhost:8080/run        # agent endpoint
-    timeout_sec: 600
-    system_prompt_file: ORCHESTRATOR.md
-    # headers:
-    #   Authorization: "Bearer ${AGENT_API_KEY}"   # ${VAR} expands from env
-    # body_template: '{"prompt":"{prompt}","system":"{system}"}'
-    # response_field: output              # dot-path to text in the JSON response
-
-# ---- Invocation timing (shared across all backends) ----
-invoke_timeout_sec: 600
-invoke_cooldown_sec: 900       # never invoke more than once per candle
+  # command: ["your-agent-cli", "run", "{prompt}"]   # ← set for your agent
 
 # ---- Risk rules (SHARED across ALL strategies — hard ceilings) ----
 # risk_engine.py enforces these and can only size DOWN from them, never up.
